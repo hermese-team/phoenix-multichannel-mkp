@@ -4,6 +4,8 @@ go 1.26
 
 require (
 	github.com/gin-gonic/gin v1.10.1
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/eventing v0.0.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/telemetry v0.0.0
 	github.com/go-redis/redis_rate/v10 v10.0.1
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/spf13/viper v1.21.0
