@@ -1,47 +1,77 @@
 package logger
 
 import (
+	"context"
+	"fmt"
+
+	"github.com/ascend/phoenix-multichannel-mkp/config"
+	"go.opentelemetry.io/contrib/bridges/otelzap"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
-var sugar *zap.SugaredLogger
-
-func init() {
-	// Sensible default so logging works before Init is called (e.g. config load).
-	l, _ := build("info")
-	sugar = l.Sugar()
-}
-
-// Init reconfigures the global logger with the level from config
-// (e.g. "debug", "info", "warn", "error"). Call once at startup.
-func Init(level string) error {
-	l, err := build(level)
+// New creates a *zap.Logger. When cfg.Telemetry.Endpoint is set, logs are also
+// forwarded to SigNoz/OTLP via otelzap bridge so traces and logs appear together.
+// Returns the logger, the log provider (call Shutdown on exit), and any error.
+func New(cfg *config.Config) (*zap.Logger, *sdklog.LoggerProvider, error) {
+	base, err := buildBase(cfg.App.Env, cfg.App.LogLevel)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	sugar = l.Sugar()
-	return nil
+
+	if cfg.Telemetry.Endpoint == "" {
+		return base, sdklog.NewLoggerProvider(), nil
+	}
+
+	// OTel log provider — shares the same gRPC endpoint as the tracer.
+	conn, err := grpc.NewClient(cfg.Telemetry.Endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting to OTel log collector: %w", err)
+	}
+
+	exp, err := otlploggrpc.New(context.Background(), otlploggrpc.WithGRPCConn(conn))
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating OTLP log exporter: %w", err)
+	}
+
+	res, _ := resource.New(context.Background(),
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String(cfg.Telemetry.ServiceName),
+			semconv.DeploymentEnvironmentKey.String(cfg.App.Env),
+		),
+	)
+
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
+		sdklog.WithResource(res),
+	)
+
+	// Tee: keep writing to stdout AND forward to OTLP.
+	otelCore := otelzap.NewCore(cfg.Telemetry.ServiceName, otelzap.WithLoggerProvider(lp))
+	combined := zapcore.NewTee(base.Core(), otelCore)
+	log := zap.New(combined, zap.AddCaller(), zap.AddStacktrace(zap.ErrorLevel))
+
+	return log, lp, nil
 }
 
-func build(level string) (*zap.Logger, error) {
+func buildBase(env, level string) (*zap.Logger, error) {
+	if env == "development" || env == "dev" {
+		return zap.NewDevelopment()
+	}
 	lvl, err := zapcore.ParseLevel(level)
 	if err != nil {
-		return nil, err
+		lvl = zapcore.InfoLevel
 	}
-	cfg := zap.NewProductionConfig()
-	cfg.Level = zap.NewAtomicLevelAt(lvl)
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	cfg.OutputPaths = []string{"stdout"}
-	cfg.ErrorOutputPaths = []string{"stderr"}
-	// Skip the wrapper frame so "caller" points to the real call site.
-	return cfg.Build(zap.AddCallerSkip(1))
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.Level = zap.NewAtomicLevelAt(lvl)
+	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	return zapCfg.Build()
 }
-
-// Sync flushes any buffered log entries. Call on shutdown.
-func Sync() { _ = sugar.Sync() }
-
-func Info(msg string, args ...any)  { sugar.Infow(msg, args...) }
-func Error(msg string, args ...any) { sugar.Errorw(msg, args...) }
-func Warn(msg string, args ...any)  { sugar.Warnw(msg, args...) }
-func Debug(msg string, args ...any) { sugar.Debugw(msg, args...) }
