@@ -2,48 +2,36 @@ package kafka
 
 import (
 	"context"
-	"fmt"
-
-	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/ascend/phoenix-multichannel-mkp/config"
+	"github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/eventing"
 )
 
-// Producer wraps a franz-go client and implements service.EventPublisher.
+// Producer adapts the shared eventing.Producer to the service.EventPublisher interface.
+// SASL credentials can be added to KafkaConfig when needed; currently local/dev uses no auth.
 type Producer struct {
-	client *kgo.Client
+	p *eventing.Producer
 }
 
-// NewProducer creates a Kafka producer client and pings the cluster.
-func NewProducer(ctx context.Context, cfg config.KafkaConfig) (*Producer, error) {
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(cfg.Brokers...),
-		kgo.AllowAutoTopicCreation(),
-	)
+// NewProducer creates a Kafka producer via the shared eventing library.
+// ctx is currently unused by the library (ping timeout is internal) but kept for API consistency.
+func NewProducer(_ context.Context, cfg config.KafkaConfig) (*Producer, error) {
+	p, err := eventing.NewProducer(eventing.ProducerOptions{
+		Brokers: cfg.Brokers,
+		// Username/Password: add to KafkaConfig when SASL is required in non-local environments.
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create kafka client: %w", err)
+		return nil, err
 	}
-	if err := client.Ping(ctx); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("ping kafka: %w", err)
-	}
-	return &Producer{client: client}, nil
+	return &Producer{p: p}, nil
 }
 
-// Publish synchronously produces a single record to the given topic.
+// Publish delegates to eventing.Producer.Produce and satisfies service.EventPublisher.
 func (p *Producer) Publish(ctx context.Context, topic, key string, payload []byte) error {
-	rec := &kgo.Record{
-		Topic: topic,
-		Key:   []byte(key),
-		Value: payload,
-	}
-	if err := p.client.ProduceSync(ctx, rec).FirstErr(); err != nil {
-		return fmt.Errorf("produce to %s: %w", topic, err)
-	}
-	return nil
+	return p.p.Produce(ctx, topic, key, payload)
 }
 
-// Close flushes pending records and closes the client.
+// Close flushes pending records and shuts down the underlying client.
 func (p *Producer) Close() {
-	p.client.Close()
+	p.p.Close()
 }
