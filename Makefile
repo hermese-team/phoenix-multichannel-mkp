@@ -11,6 +11,8 @@ GO          := go
 GOFLAGS     ?=
 MOCKGEN     := $(GO) tool mockgen
 SWAG        := $(GO) tool swag
+SQLC        := $(GO) tool sqlc
+MIGRATE     := $(GO) run -mod=mod github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
 # Swagger / OpenAPI
 SWAGGER_DIR  := docs
@@ -64,12 +66,34 @@ test-cover: ## Run tests and show coverage
 tools: ## Register codegen tools in go.mod (run once; needs network)
 	$(GO) get -tool go.uber.org/mock/mockgen@latest
 	$(GO) get -tool github.com/swaggo/swag/cmd/swag@latest
+	$(GO) get -tool github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 
 .PHONY: generate
 generate: ## Generate mocks for repository/service interfaces
 	@mkdir -p internal/repository/mocks internal/service/mocks
 	$(MOCKGEN) -source=internal/repository/repository.go -destination=internal/repository/mocks/mock_repository.go -package=mocks
 	$(MOCKGEN) -source=internal/service/service.go -destination=internal/service/mocks/mock_service.go -package=mocks
+
+.PHONY: sqlc
+sqlc: ## Generate type-safe DB code from SQL queries (db/query/ → db/sqlc/)
+	$(SQLC) generate
+
+# ── Database migrations ───────────────────────────────────────────────────────
+
+DB_URL      ?= pgx5://postgres:postgres@localhost:5432/phoenix_mkp?sslmode=disable
+MIGRATIONS  := file://migrations
+
+.PHONY: migrate-up
+migrate-up: ## Apply all pending migrations
+	$(MIGRATE) -database "$(DB_URL)" -path migrations up
+
+.PHONY: migrate-down
+migrate-down: ## Roll back the last migration
+	$(MIGRATE) -database "$(DB_URL)" -path migrations down 1
+
+.PHONY: migrate-create
+migrate-create: ## Create a new migration pair: make migrate-create NAME=add_users
+	$(MIGRATE) create -ext sql -dir migrations -seq $(NAME)
 
 .PHONY: swagger
 swagger: ## Generate Swagger/OpenAPI docs from annotations

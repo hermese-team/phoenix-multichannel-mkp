@@ -7,24 +7,31 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/ascend/phoenix-multichannel-mkp/internal/handler/middleware"
-	"github.com/ascend/phoenix-multichannel-mkp/pkg/logger"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.uber.org/zap"
 )
 
 type Config struct {
 	Port            string
+	ServiceName     string
 	ShutdownTimeout time.Duration
 }
 
 type Server struct {
 	httpServer *http.Server
 	engine     *gin.Engine
+	log        *zap.Logger
 }
 
-func New(cfg Config, productHandler *ProductHandler, orderHandler *OrderHandler) *Server {
+func New(cfg Config, log *zap.Logger, productHandler *ProductHandler, orderHandler *OrderHandler) *Server {
+	if cfg.ServiceName == "" {
+		cfg.ServiceName = "phoenix-multichannel-mkp"
+	}
+
 	engine := gin.New()
-	engine.Use(middleware.Logger(), middleware.Recovery())
+	engine.Use(gin.Recovery())
+	engine.Use(otelgin.Middleware(cfg.ServiceName)) // OTel trace per HTTP request
+	engine.Use(zapLogger(log))
 
 	v1 := engine.Group("/api/v1")
 	productHandler.RegisterRoutes(v1)
@@ -36,6 +43,7 @@ func New(cfg Config, productHandler *ProductHandler, orderHandler *OrderHandler)
 
 	return &Server{
 		engine: engine,
+		log:    log,
 		httpServer: &http.Server{
 			Addr:         ":" + cfg.Port,
 			Handler:      engine,
@@ -47,7 +55,7 @@ func New(cfg Config, productHandler *ProductHandler, orderHandler *OrderHandler)
 }
 
 func (s *Server) Start() error {
-	logger.Info("starting server", "addr", s.httpServer.Addr)
+	s.log.Info("starting server", zap.String("addr", s.httpServer.Addr))
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -55,6 +63,21 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	logger.Info("shutting down server")
+	s.log.Info("shutting down server")
 	return s.httpServer.Shutdown(ctx)
+}
+
+// zapLogger logs each request with structured zap fields.
+func zapLogger(log *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		log.Info("request",
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+			zap.Int("status", c.Writer.Status()),
+			zap.Duration("latency", time.Since(start)),
+			zap.String("client_ip", c.ClientIP()),
+		)
+	}
 }
