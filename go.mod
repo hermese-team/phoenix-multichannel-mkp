@@ -4,6 +4,9 @@ go 1.26.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/eventing v0.0.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/postgres v0.0.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/telemetry v0.0.0
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
