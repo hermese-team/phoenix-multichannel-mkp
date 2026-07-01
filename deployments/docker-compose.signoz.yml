@@ -1,0 +1,22 @@
+# Jaeger all-in-one — distributed tracing backend
+# Run together with the main compose:
+#   docker compose -f docker-compose.yml -f docker-compose.signoz.yml up -d
+#
+# UI:  http://localhost:16686
+# OTLP gRPC: localhost:4317  ← app points here (config.json telemetry.endpoint)
+
+networks:
+  shopee-dev:
+    driver: bridge
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    hostname: jaeger
+    networks: [shopee-dev]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP

@@ -1,0 +1,42 @@
+{
+  "app_env": "dev",
+  "server_port": 8080,
+  "logger": {
+    "service_owner": "channel-adapter-shopee",
+    "log_level": "debug"
+  },
+  "shopee": {
+    "partner_id": 0,
+    "partner_key": "",
+    "shop_id": 0,
+    "access_token": "",
+    "refresh_token": "",
+    "base_url": "https://openplatform.sandbox.test-stable.shopee.sg",
+    "timeout_sec": 30,
+    "redirect_url": "http://localhost:8080/auth/shopee/callback"
+  },
+  "kafka": {
+    "brokers": ["localhost:9092"],
+    "group_id": "channel-adapter-shopee",
+    "user": "",
+    "pass": "",
+    "topic_raw_order_accepted": "raw.order.accepted.v1"
+  },
+  "redis": {
+    "mode": "standalone",
+    "addrs": ["localhost:6379"],
+    "user": "",
+    "password": "",
+    "db": 0
+  },
+  "telemetry": {
+    "endpoint": "",
+    "service_name": "channel-adapter-shopee"
+  },
+  "poller": {
+    "page_size": 50,
+    "interval_sec": 30,
+    "lookback_sec": 86400,
+    "rate_limit_per_min": 80
+  }
+}
