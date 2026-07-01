@@ -5,21 +5,25 @@ go 1.26.0
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-resty/resty/v2 v2.17.2
-	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/spf13/viper v1.21.0
-	github.com/twmb/franz-go v1.21.4
-	go.opentelemetry.io/contrib/bridges/otelzap v0.19.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.69.0
-	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.20.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/log v0.20.0
 	go.uber.org/zap v1.28.0
-	google.golang.org/grpc v1.82.0
+)
+
+require (
+	github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
+	github.com/lib/pq v1.12.3 // indirect
+	github.com/twmb/franz-go v1.21.4 // indirect
+	go.opentelemetry.io/contrib/bridges/otelzap v0.19.0 // indirect
+	go.opentelemetry.io/otel v1.44.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.20.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0 // indirect
+	google.golang.org/grpc v1.82.0 // indirect
 )
 
 require (
@@ -58,8 +62,10 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/cel-go v0.28.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/eventing v0.0.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/postgres v0.0.0
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/telemetry v0.0.0
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -136,4 +142,10 @@ tool (
 	github.com/sqlc-dev/sqlc/cmd/sqlc
 	github.com/swaggo/swag/cmd/swag
 	go.uber.org/mock/mockgen
+)
+
+replace (
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/eventing => ../../libraries/go/eventing
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/postgres => ../../libraries/go/postgres
+	github.com/hermese-team/phoenix-multichannel-mkp/libraries/go/telemetry => ../../libraries/go/telemetry
 )

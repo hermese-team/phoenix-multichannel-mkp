@@ -1,14 +1,6 @@
-go 1.26
+go 1.26.0
 
 use (
-	// Services
 	./services/order-ingestion
 	./services/channel-adapter-shopee
-
-	// Shared libraries
-	./libraries/go/telemetry
-	./libraries/go/eventing
-	./libraries/go/postgres
-	./libraries/go/channel-sdk
-	./libraries/go/idempotency
 )
