@@ -1,9 +1,11 @@
+// Package shopee assembles the Shopee sell-channel. Each entrypoint wires only
+// the infrastructure its role needs, so the consumer never opens an HTTP
+// server and the server never opens a Kafka consumer.
 package shopee
 
 import (
-	mysqlAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/mysql"
-	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
+	pgAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	orderUC "github.com/okdev/marketplace-sync/internal/usecase/order"
 	productUC "github.com/okdev/marketplace-sync/internal/usecase/product"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
@@ -12,42 +14,34 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/server"
 )
 
-type Shopee struct {
-	server    *server.Server
-	consumer  *consumer.ProductConsumer
-	scheduler *scheduler.Scheduler
-}
-
-func New(cfg Config, mysqlCfg mysqlAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg kafkaAdapter.Config) (*Shopee, error) {
-	db, err := mysqlAdapter.New(mysqlCfg)
+// NewServer wires the Shopee HTTP server: Postgres (orders) only.
+func NewServer(pgCfg pgAdapter.Config) (*server.Server, error) {
+	db, err := pgAdapter.New(pgCfg)
 	if err != nil {
 		return nil, err
 	}
+	processOrderUC := orderUC.NewProcessWebhook(pgAdapter.NewOrderRepository(db))
+	return server.New(processOrderUC), nil
+}
 
-	if _, err = redisAdapter.New(redisCfg); err != nil {
+// NewConsumer wires the product-publish consumer: Postgres (products), the
+// Shopee client and the Kafka consumer.
+func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.ProductConsumer, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
 		return nil, err
 	}
-
 	shopeeClient := client.New(client.Config{
 		PartnerID: cfg.PartnerID,
 		AppKey:    cfg.AppKey,
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
-
-	productRepo := mysqlAdapter.NewProductRepository(db)
-	orderRepo := mysqlAdapter.NewOrderRepository(db)
-
-	publishUC := productUC.NewPublish(productRepo, shopeeClient)
-	processOrderUC := orderUC.NewProcessWebhook(orderRepo)
-
-	return &Shopee{
-		server:    server.New(processOrderUC),
-		consumer:  consumer.New(kafkaCfg, publishUC),
-		scheduler: scheduler.New(),
-	}, nil
+	publishUC := productUC.NewPublish(pgAdapter.NewProductRepository(db), shopeeClient)
+	return consumer.New(kafkaCfg, publishUC), nil
 }
 
-func (s *Shopee) Server() *server.Server              { return s.server }
-func (s *Shopee) Consumer() *consumer.ProductConsumer { return s.consumer }
-func (s *Shopee) Scheduler() *scheduler.Scheduler     { return s.scheduler }
+// NewScheduler wires the Shopee scheduler (currently no dependencies).
+func NewScheduler() *scheduler.Scheduler {
+	return scheduler.New()
+}

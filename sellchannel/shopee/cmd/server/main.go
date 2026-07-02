@@ -7,15 +7,23 @@ import (
 	"syscall"
 
 	"github.com/okdev/marketplace-sync/config"
+	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee"
 )
 
 func main() {
-	cfg := config.Load()
-
-	app, err := shopee.New(cfg.Shopee, cfg.MySQL, cfg.Redis, cfg.Kafka)
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("init shopee: %v", err)
+		log.Fatalf("load config: %v", err)
+	}
+	if err := logger.Init(cfg.App.LogLevel); err != nil {
+		log.Fatalf("init logger: %v", err)
+	}
+	defer logger.Sync()
+
+	srv, err := shopee.NewServer(cfg.Postgres)
+	if err != nil {
+		log.Fatalf("init shopee server: %v", err)
 	}
 
 	// marketplace = shoppee.NewMarket()
@@ -26,7 +34,7 @@ func main() {
 
 	go func() {
 		log.Printf("shopee server listening on :%s", cfg.App.Port)
-		if err := app.Server().Run(":" + cfg.App.Port); err != nil {
+		if err := srv.Run(":" + cfg.App.Port); err != nil {
 			log.Fatalf("server error: %v", err)
 		}
 	}()

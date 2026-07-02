@@ -2,9 +2,9 @@ package order
 
 import (
 	"context"
-	"fmt"
 
 	domain "github.com/okdev/marketplace-sync/internal/domain/order"
+	applog "github.com/okdev/marketplace-sync/pkg/logger"
 )
 
 type ProcessWebhookUsecase struct {
@@ -36,13 +36,15 @@ func (u *ProcessWebhookUsecase) Execute(ctx context.Context, payload WebhookPayl
 
 	if o.ID == 0 {
 		if err := u.repo.Save(ctx, o); err != nil {
-			return fmt.Errorf("save order: %w", err)
+			applog.Error("save order", "error", err)
+			return err
 		}
 		return nil
 	}
 
 	if err := u.repo.Update(ctx, o); err != nil {
-		return fmt.Errorf("update order: %w", err)
+		applog.Error("update order", "error", err)
+		return err
 	}
 	return nil
 }

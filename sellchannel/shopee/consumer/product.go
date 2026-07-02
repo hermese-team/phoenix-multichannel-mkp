@@ -3,15 +3,23 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"time"
 
-	"github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
+
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
 	productUC "github.com/okdev/marketplace-sync/internal/usecase/product"
 )
 
+const (
+	productConsumerGroup = "shopee-product-consumer"
+	productPublishTopic  = "shopee.product.publish"
+)
+
 type ProductConsumer struct {
-	reader    *kafka.Reader
+	cfg       kafkaAdapter.Config
 	publishUC *productUC.PublishUsecase
 }
 
@@ -21,38 +29,51 @@ type PublishProductEvent struct {
 }
 
 func New(cfg kafkaAdapter.Config, publishUC *productUC.PublishUsecase) *ProductConsumer {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: cfg.Brokers,
-		GroupID: "shopee-product-consumer",
-		Topic:   "shopee.product.publish",
-	})
-	return &ProductConsumer{reader: reader, publishUC: publishUC}
+	return &ProductConsumer{cfg: cfg, publishUC: publishUC}
 }
 
 func (c *ProductConsumer) Start(ctx context.Context) error {
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(c.cfg.Brokers...),
+		kgo.ConsumerGroup(productConsumerGroup),
+		kgo.ConsumeTopics(productPublishTopic),
+	)
+	if err != nil {
+		return fmt.Errorf("create kafka consumer: %w", err)
+	}
+	defer client.Close()
+
 	log.Println("shopee product consumer started")
 	for {
-		msg, err := c.reader.ReadMessage(ctx)
-		if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		fetches := client.PollFetches(ctx)
+		if errs := fetches.Errors(); len(errs) > 0 {
 			if ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("read message error: %v", err)
+			for _, e := range errs {
+				log.Printf("fetch error: %v", e.Err)
+			}
+			// Back off so a persistent fetch error (broker down, rebalance
+			// loop, …) can't spin this loop at full CPU and flood the broker.
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Second):
+			}
 			continue
 		}
-
-		var event PublishProductEvent
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			log.Printf("unmarshal event error: %v", err)
-			continue
-		}
-
-		if err := c.publishUC.Execute(ctx, event.ShopID, event.ProductID); err != nil {
-			log.Printf("publish product error: %v", err)
-		}
+		fetches.EachRecord(func(rec *kgo.Record) {
+			var event PublishProductEvent
+			if err := json.Unmarshal(rec.Value, &event); err != nil {
+				log.Printf("unmarshal event error: %v", err)
+				return
+			}
+			if err := c.publishUC.Execute(ctx, event.ShopID, event.ProductID); err != nil {
+				log.Printf("publish product error: %v", err)
+			}
+		})
 	}
-}
-
-func (c *ProductConsumer) Close() error {
-	return c.reader.Close()
 }

@@ -9,7 +9,7 @@ import (
 
 	"github.com/okdev/marketplace-sync/config"
 	"github.com/okdev/marketplace-sync/pkg/logger"
-	"github.com/okdev/marketplace-sync/sellchannel/shopee"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada"
 )
 
 func main() {
@@ -22,23 +22,21 @@ func main() {
 	}
 	defer logger.Sync()
 
-	consumer, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
+	sched, err := lazada.NewScheduler(cfg.Lazada, cfg.Postgres, cfg.Redis)
 	if err != nil {
-		log.Fatalf("init shopee consumer: %v", err)
+		log.Fatalf("init lazada scheduler: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
 		<-quit
 		cancel()
 	}()
 
-	log.Println("starting shopee consumer")
-	if err := consumer.Start(ctx); err != nil {
-		log.Fatalf("consumer error: %v", err)
+	if err := sched.Start(ctx); err != nil {
+		log.Fatalf("scheduler error: %v", err)
 	}
 }

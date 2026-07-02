@@ -8,7 +8,7 @@ import (
 )
 
 type PublishUsecase struct {
-	repo      domain.Repository
+	repo        domain.Repository
 	sellchannel domain.SellChannel
 }
 

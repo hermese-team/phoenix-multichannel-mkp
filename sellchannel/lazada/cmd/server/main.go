@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -9,7 +8,7 @@ import (
 
 	"github.com/okdev/marketplace-sync/config"
 	"github.com/okdev/marketplace-sync/pkg/logger"
-	"github.com/okdev/marketplace-sync/sellchannel/shopee"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada"
 )
 
 func main() {
@@ -22,23 +21,21 @@ func main() {
 	}
 	defer logger.Sync()
 
-	consumer, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
+	srv, err := lazada.NewServer(cfg.Postgres, cfg.Redis, cfg.Kafka)
 	if err != nil {
-		log.Fatalf("init shopee consumer: %v", err)
+		log.Fatalf("init lazada server: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-quit
-		cancel()
+		log.Printf("lazada server listening on :%s", cfg.App.Port)
+		if err := srv.Run(":" + cfg.App.Port); err != nil {
+			log.Fatalf("server error: %v", err)
+		}
 	}()
 
-	log.Println("starting shopee consumer")
-	if err := consumer.Start(ctx); err != nil {
-		log.Fatalf("consumer error: %v", err)
-	}
+	<-quit
+	log.Println("shutting down lazada server")
 }
