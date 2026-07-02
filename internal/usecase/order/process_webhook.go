@@ -1,0 +1,48 @@
+package order
+
+import (
+	"context"
+	"fmt"
+
+	domain "github.com/okdev/marketplace-sync/internal/domain/order"
+)
+
+type ProcessWebhookUsecase struct {
+	repo domain.Repository
+}
+
+func NewProcessWebhook(repo domain.Repository) *ProcessWebhookUsecase {
+	return &ProcessWebhookUsecase{repo: repo}
+}
+
+type WebhookPayload struct {
+	MarketplaceOrderID string
+	SellChannelType    string
+	ShopID             int64
+	Status             string
+}
+
+func (u *ProcessWebhookUsecase) Execute(ctx context.Context, payload WebhookPayload) error {
+	o, err := u.repo.FindBySellChannelID(ctx, payload.MarketplaceOrderID, payload.SellChannelType)
+	if err != nil {
+		o = &domain.Order{
+			ShopID:          payload.ShopID,
+			SellChannelID:   payload.MarketplaceOrderID,
+			SellChannelType: payload.SellChannelType,
+		}
+	}
+
+	o.Status = domain.Status(payload.Status)
+
+	if o.ID == 0 {
+		if err := u.repo.Save(ctx, o); err != nil {
+			return fmt.Errorf("save order: %w", err)
+		}
+		return nil
+	}
+
+	if err := u.repo.Update(ctx, o); err != nil {
+		return fmt.Errorf("update order: %w", err)
+	}
+	return nil
+}

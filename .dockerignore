@@ -1,7 +1,0 @@
-bin/
-coverage.out
-coverage.html
-*.md
-.git/
-.gitignore
-.vscode
