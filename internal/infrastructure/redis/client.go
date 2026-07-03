@@ -49,6 +49,18 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 	return c.rdb.Set(ctx, key, value, ttl).Err()
 }
 
+// SetMany atomically sets several key/value pairs with the same ttl (0 = no
+// expiry) in a single MULTI/EXEC transaction, so callers never observe a
+// partially-updated set.
+func (c *Client) SetMany(ctx context.Context, ttl time.Duration, kv map[string]string) error {
+	pipe := c.rdb.TxPipeline()
+	for k, v := range kv {
+		pipe.Set(ctx, k, v, ttl)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // SetNX sets the key only if it does not exist. It returns true when the key
 // was newly set (first time seen), false when it already existed.
 func (c *Client) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {

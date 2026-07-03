@@ -77,7 +77,7 @@ func (c *Client) do(ctx context.Context, method, gateway, accessToken, apiPath s
 		return nil, envelope{}, fmt.Errorf("decode envelope (%s): %w", apiPath, err)
 	}
 	if env.Code != "0" {
-		return respBody, env, fmt.Errorf("lazada %s failed: code=%s message=%s", apiPath, env.Code, env.Message)
+		return respBody, env, &APIError{APIPath: apiPath, Code: env.Code, Message: env.Message}
 	}
 	return respBody, env, nil
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-resty/resty/v2"
+
 	"github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/client"
@@ -17,10 +19,11 @@ type Syncer struct {
 	cfg    client.Config
 	tokens *tokenstore.Store
 	repo   *postgres.LazadaSyncRepository
+	http   *resty.Client // shared across per-call clients to reuse connections
 }
 
 func New(cfg client.Config, tokens *tokenstore.Store, repo *postgres.LazadaSyncRepository) *Syncer {
-	return &Syncer{cfg: cfg, tokens: tokens, repo: repo}
+	return &Syncer{cfg: cfg, tokens: tokens, repo: repo, http: client.NewHTTPClient()}
 }
 
 // SyncOrder fetches an order's detail + items and upserts it. On an API error it
@@ -28,7 +31,12 @@ func New(cfg client.Config, tokens *tokenstore.Store, repo *postgres.LazadaSyncR
 func (s *Syncer) SyncOrder(ctx context.Context, orderID string) error {
 	detail, items, err := s.fetch(ctx, orderID)
 	if err != nil {
-		logger.Warn("fetch order failed, refreshing token", "order", orderID, "error", err)
+		// Only an expired/invalid access token is recoverable by refreshing;
+		// transport or business errors are returned as-is.
+		if !client.IsAuthError(err) {
+			return err
+		}
+		logger.Warn("fetch order failed with auth error, refreshing token", "order", orderID, "error", err)
 		if rerr := s.refreshTokens(ctx); rerr != nil {
 			return err
 		}
@@ -54,7 +62,10 @@ func (s *Syncer) ListOrders(ctx context.Context, after, before time.Time, offset
 	}
 	total, ids, err := c.GetOrderList(ctx, after, before, offset)
 	if err != nil {
-		logger.Warn("order list failed, refreshing token", "error", err)
+		if !client.IsAuthError(err) {
+			return 0, nil, err
+		}
+		logger.Warn("order list failed with auth error, refreshing token", "error", err)
 		if rerr := s.refreshTokens(ctx); rerr != nil {
 			return 0, nil, err
 		}
@@ -93,7 +104,7 @@ func (s *Syncer) clientWithStoredToken(ctx context.Context) (*client.Client, err
 	cfg := s.cfg
 	cfg.AccessToken = access
 	cfg.RefreshToken = refresh
-	return client.New(cfg), nil
+	return client.NewWithHTTP(cfg, s.http), nil
 }
 
 // refreshTokens uses the stored refresh token to obtain a new pair and writes it

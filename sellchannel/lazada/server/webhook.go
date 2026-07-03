@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	orderUC "github.com/okdev/marketplace-sync/internal/usecase/order"
+	"github.com/okdev/marketplace-sync/pkg/apperror"
+	"github.com/okdev/marketplace-sync/pkg/httpserver"
 	applog "github.com/okdev/marketplace-sync/pkg/logger"
 )
 
@@ -21,15 +22,17 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 	// อ่าน raw body ครั้งเดียว แล้ว log ดูทั้งก้อนที่ Lazada ยิงมา
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondError(c, apperror.NewBadRequest(err))
 		return
 	}
+	// NOTE: logs the full raw body at Info. Fine today (the payload has no
+	// PII/secret), but revisit if the webhook schema grows to include personal data.
 	applog.Info("lazada webhook received", "body", string(body))
 
 	// parse จาก body ที่อ่านไว้ (ไม่ใช้ ShouldBindJSON เพราะ body ถูกอ่านไปแล้ว)
 	var payload OrderWebhookRequest
 	if err := json.Unmarshal(body, &payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondError(c, apperror.NewBadRequest(err))
 		return
 	}
 
@@ -41,7 +44,7 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		applog.Error("idempotency check", "key", idemKey, "error", err)
 	} else if !isNew {
 		applog.Info("duplicate webhook skipped", "order", payload.Data.TradeOrderID)
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		httpserver.NewSuccessResponse(c, gin.H{"status": "ok"})
 		return
 	}
 
@@ -57,6 +60,10 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 	// "9999") still parses, others fall back to 0.
 	shopID, _ := strconv.ParseInt(payload.SellerID, 10, 64)
 
+	// NOTE(mock): the webhook both publishes to Kafka (the consumer does the full
+	// async detail sync) and writes the order synchronously below. This
+	// double-handling is a mock convenience — revisit once the async pipeline is
+	// the single source of truth for persistence.
 	if err := s.processOrder.Execute(c.Request.Context(), orderUC.WebhookPayload{
 		MarketplaceOrderID: payload.Data.TradeOrderID,
 		SellChannelType:    "lazada",
@@ -66,5 +73,5 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		applog.Error("process lazada order webhook", "order", payload.Data.TradeOrderID, "error", err)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	httpserver.NewSuccessResponse(c, gin.H{"status": "ok"})
 }

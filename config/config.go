@@ -50,7 +50,7 @@ func Load() (*Config, error) {
 			AppKey:    os.Getenv("LAZADA_APP_KEY"),
 			AppSecret: os.Getenv("LAZADA_APP_SECRET"),
 			BaseURL:   getEnv("LAZADA_URL_API", "https://api.lazada.co.th/rest"),
-			AuthURL:   getEnv("LAZADA_AUTH_URL", "https://auth.lazada.com/rest"),
+			AuthURL:   getEnv("LAZADA_AUTH_URL", lazadaclient.DefaultAuthURL),
 		},
 		Postgres: postgres.Config{
 			DSN:             getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/marketplace_sync?sslmode=disable"),

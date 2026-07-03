@@ -33,10 +33,10 @@ func (s *Store) Get(ctx context.Context) (access, refresh string, err error) {
 	return access, refresh, nil
 }
 
-// Set stores the access/refresh tokens. A ttl <= 0 means no expiry.
+// Set stores the access/refresh tokens atomically. A ttl <= 0 means no expiry.
 func (s *Store) Set(ctx context.Context, access, refresh string, ttl time.Duration) error {
-	if err := s.rdb.Set(ctx, keyAccess, access, ttl); err != nil {
-		return err
-	}
-	return s.rdb.Set(ctx, keyRefresh, refresh, ttl)
+	return s.rdb.SetMany(ctx, ttl, map[string]string{
+		keyAccess:  access,
+		keyRefresh: refresh,
+	})
 }

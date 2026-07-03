@@ -71,26 +71,37 @@ func (s *Scheduler) syncOrders(ctx context.Context) error {
 	before := time.Now()
 	after := before.Add(-s.window)
 
-	total, ids, err := s.syncer.ListOrders(ctx, after, before, 0)
-	if err != nil {
-		return err
-	}
-	logger.Info("lazada order list fetched", "total", total, "page", len(ids))
-
-	n := len(ids)
-	if s.limit > 0 && n > s.limit {
-		n = s.limit
-	}
-
-	saved := 0
-	for _, id := range ids[:n] {
-		if err := s.syncer.SyncOrder(ctx, id); err != nil {
-			logger.Error("sync order", "order", id, "error", err)
-			continue
+	processed, saved := 0, 0
+	for offset := 0; ; {
+		total, ids, err := s.syncer.ListOrders(ctx, after, before, offset)
+		if err != nil {
+			return err
 		}
-		saved++
+		if offset == 0 {
+			logger.Info("lazada order list fetched", "total", total)
+		}
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			if s.limit > 0 && processed >= s.limit {
+				break
+			}
+			processed++
+			if err := s.syncer.SyncOrder(ctx, id); err != nil {
+				logger.Error("sync order", "order", id, "error", err)
+				continue
+			}
+			saved++
+		}
+		// Advance by the number actually returned (self-adjusting to the API's
+		// page size) and stop once we've caught up to total or hit the cap.
+		offset += len(ids)
+		if offset >= total || (s.limit > 0 && processed >= s.limit) {
+			break
+		}
 	}
-	logger.Info("lazada order sync done", "processed", n, "saved", saved)
+	logger.Info("lazada order sync done", "processed", processed, "saved", saved)
 	return nil
 }
 

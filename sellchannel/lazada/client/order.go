@@ -8,12 +8,15 @@ import (
 	"time"
 )
 
+// orderPageLimit is the page size requested from /orders/get.
+const orderPageLimit = 100
+
 // GetOrderList calls GET /orders/get for one page. The window bounds are
 // formatted as UTC "yyyy-MM-ddTHH:mm:ssZ". Returns the total count and the
 // order numbers on this page.
 func (c *Client) GetOrderList(ctx context.Context, updateAfter, updateBefore time.Time, offset int) (int, []string, error) {
 	raw, err := c.doSigned(ctx, "/orders/get", map[string]string{
-		"limit":         "100",
+		"limit":         strconv.Itoa(orderPageLimit),
 		"offset":        strconv.Itoa(offset),
 		"update_after":  updateAfter.UTC().Format("2006-01-02T15:04:05Z"),
 		"update_before": updateBefore.UTC().Format("2006-01-02T15:04:05Z"),
