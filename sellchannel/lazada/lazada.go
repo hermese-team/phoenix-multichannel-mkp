@@ -18,6 +18,8 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/consumer"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/fulfillmentscheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/fulfillmentsync"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/imagescheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/imagesync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/orderscheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/ordersync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productcreatescheduler"
@@ -185,6 +187,25 @@ func NewProductOffsaleScheduler(cfg client.Config, pgCfg pgAdapter.Config, redis
 		return nil, err
 	}
 	return productoffsalescheduler.New(productoffsalesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewImageScheduler wires the image scheduler: Postgres (pending image work)
+// and Redis (token store). No Kafka, no HTTP server.
+func NewImageScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*imagescheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaProductImageRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return imagescheduler.New(imagesync.New(cfg, tokens, repo), tokens), nil
 }
 
 // NewFulfillmentScheduler wires the fulfillment scheduler: Postgres (orders
