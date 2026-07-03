@@ -12,6 +12,8 @@ import (
 	pgAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	orderUC "github.com/okdev/marketplace-sync/internal/usecase/order"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/catalogscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/catalogsync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/client"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/consumer"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/fulfillmentscheduler"
@@ -107,6 +109,25 @@ func NewProductCreateScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisC
 		return nil, err
 	}
 	return productcreatescheduler.New(productcreatesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewCatalogScheduler wires the catalog reconcile scheduler: Postgres (snapshot)
+// and Redis (token store). Inbound poll; no Kafka, no HTTP server.
+func NewCatalogScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*catalogscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaProductCatalogRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return catalogscheduler.New(catalogsync.New(cfg, tokens, repo), tokens), nil
 }
 
 // NewProductUpdateScheduler wires the product-update scheduler: Postgres
