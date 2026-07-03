@@ -23,6 +23,7 @@ build: ## Build all sell-channel binaries to bin/
 	$(GO) build -o bin/lazada-consumer  ./sellchannel/lazada/cmd/consumer
 	$(GO) build -o bin/lazada-product-scheduler ./sellchannel/lazada/cmd/product-scheduler
 	$(GO) build -o bin/lazada-product-create-scheduler ./sellchannel/lazada/cmd/product-create-scheduler
+	$(GO) build -o bin/lazada-product-update-scheduler ./sellchannel/lazada/cmd/product-update-scheduler
 	$(GO) build -o bin/lazada-fulfillment-scheduler ./sellchannel/lazada/cmd/fulfillment-scheduler
 	$(GO) build -o bin/lazada-token     ./sellchannel/lazada/cmd/lazada-token
 
@@ -55,6 +56,10 @@ run-lazada-product-scheduler: ## Run the lazada product price/stock sync schedul
 .PHONY: run-lazada-product-create-scheduler
 run-lazada-product-create-scheduler: ## Run the lazada product-create scheduler
 	$(GO) run ./sellchannel/lazada/cmd/product-create-scheduler
+
+.PHONY: run-lazada-product-update-scheduler
+run-lazada-product-update-scheduler: ## Run the lazada product-update scheduler
+	$(GO) run ./sellchannel/lazada/cmd/product-update-scheduler
 
 .PHONY: run-lazada-category
 run-lazada-category: ## Browse Lazada category tree / attributes (LAZADA_CATEGORY_ID=<id> for attrs)
