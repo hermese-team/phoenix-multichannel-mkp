@@ -26,6 +26,8 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productsync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productupdatescheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productupdatesync"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/sellablestockscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/sellablestocksync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/server"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/tokenstore"
 )
@@ -124,6 +126,25 @@ func NewProductUpdateScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisC
 		return nil, err
 	}
 	return productupdatescheduler.New(productupdatesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewSellableStockScheduler wires the sellable-stock scheduler: Postgres
+// (pending stock changes) and Redis (token store). No Kafka, no HTTP server.
+func NewSellableStockScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*sellablestockscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaSellableStockRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return sellablestockscheduler.New(sellablestocksync.New(cfg, tokens, repo), tokens), nil
 }
 
 // NewProductOffsaleScheduler wires the off-sale scheduler: Postgres (pending
