@@ -29,6 +29,7 @@ build: ## Build all sell-channel binaries to bin/
 	$(GO) build -o bin/lazada-catalog-scheduler ./sellchannel/lazada/cmd/catalog-scheduler
 	$(GO) build -o bin/lazada-image-scheduler ./sellchannel/lazada/cmd/image-scheduler
 	$(GO) build -o bin/lazada-fulfillment-scheduler ./sellchannel/lazada/cmd/fulfillment-scheduler
+	$(GO) build -o bin/lazada-voucher-scheduler ./sellchannel/lazada/cmd/voucher-scheduler
 	$(GO) build -o bin/lazada-token     ./sellchannel/lazada/cmd/lazada-token
 
 .PHONY: check-consumers
@@ -88,6 +89,10 @@ run-lazada-category: ## Browse Lazada category tree / attributes (LAZADA_CATEGOR
 .PHONY: run-lazada-fulfillment-scheduler
 run-lazada-fulfillment-scheduler: ## Run the lazada fulfillment scheduler (dropship + own-fleet)
 	$(GO) run ./sellchannel/lazada/cmd/fulfillment-scheduler
+
+.PHONY: run-lazada-voucher-scheduler
+run-lazada-voucher-scheduler: ## Run the lazada seller-voucher create scheduler
+	$(GO) run ./sellchannel/lazada/cmd/voucher-scheduler
 
 .PHONY: seed-lazada-token
 seed-lazada-token: ## Seed Lazada tokens into Redis (REFRESH=<t> [ACCESS=<t>])

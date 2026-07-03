@@ -34,6 +34,8 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/sellablestocksync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/server"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/tokenstore"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/voucherscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/vouchersync"
 )
 
 // NewServer wires the Lazada HTTP server: Postgres (orders), Redis (token store
@@ -111,6 +113,25 @@ func NewProductCreateScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisC
 		return nil, err
 	}
 	return productcreatescheduler.New(productcreatesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewVoucherScheduler wires the seller-voucher create scheduler: Postgres
+// (vouchers pending creation) and Redis (token store). No Kafka, no HTTP server.
+func NewVoucherScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*voucherscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaSellerVoucherRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return voucherscheduler.New(vouchersync.New(cfg, tokens, repo), tokens), nil
 }
 
 // NewCatalogScheduler wires the catalog reconcile scheduler: Postgres (snapshot)

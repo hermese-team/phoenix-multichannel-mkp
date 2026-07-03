@@ -1,6 +1,6 @@
 # Lazada Sell-Channel — คู่มือการรัน
 
-ช่องทาง Lazada ประกอบด้วย **14 binary** แต่ละตัวรันแยกกันและใช้ dependency เฉพาะที่ตัวเองต้องการ
+ช่องทาง Lazada ประกอบด้วย **15 binary** แต่ละตัวรันแยกกันและใช้ dependency เฉพาะที่ตัวเองต้องการ
 (ตาม design ใน `lazada.go`: consumer ไม่เปิด Kafka producer, scheduler ไม่เปิด HTTP server ฯลฯ)
 
 จัดกลุ่มได้เป็น 4 พวก: **webhook** (server+consumer), **order sync** (order-scheduler), **product sync** (7 scheduler),
@@ -23,6 +23,7 @@
 | `catalog-scheduler` | pull GetProducts จาก Lazada → reconcile snapshot ลง DB | – | ✅ | ✅ | – | ✅ |
 | `image-scheduler` | upload รูป → set รูปเข้า sku (resumable) | – | ✅ | ✅ | – | ✅ |
 | `fulfillment-scheduler` | pack/RTS (dropship) + own-fleet shipped (pending) | – | ✅ | ✅ | – | ✅ |
+| `voucher-scheduler` | สร้าง seller voucher (pending) บน Lazada | – | ✅ | ✅ | – | ✅ |
 | `lazada-token` | seed access/refresh token ลง Redis (รันครั้งเดียว) | – | – | ✅ | – | – (เป็นตัวเขียน token) |
 | `lazada-ping` | smoke test — เช็ค auth/signing/token กับ Lazada API | – | – | ✅ | – | ✅ |
 | `lazada-category` | browse category tree / attributes (หา category_id + attribute ก่อน seed create) | – | – | – | – | – (no-auth) |
@@ -118,6 +119,7 @@ make run-lazada-sellable-stock-scheduler    # adjust/update stock ตาม ware
 make run-lazada-catalog-scheduler           # pull GetProducts → reconcile
 make run-lazada-image-scheduler             # upload + set images
 make run-lazada-fulfillment-scheduler       # pack/RTS + own-fleet
+make run-lazada-voucher-scheduler           # สร้าง seller voucher
 ```
 
 > scheduler แต่ละตัวอิสระต่อกัน — เปิดเฉพาะ loop ที่ต้องใช้ ไม่ต้องรันครบทุกตัว
@@ -206,6 +208,7 @@ make kill-consumers     # kill orphan
 | catalog-scheduler | `LAZADA_CATALOG_SPEC=@every 1h` | `LAZADA_CATALOG_FILTER=all` | inbound pull |
 | image-scheduler | `LAZADA_IMAGE_SPEC=@every 5m` | `LAZADA_IMAGE_LIMIT=20` | |
 | fulfillment-scheduler | `LAZADA_FULFILLMENT_SPEC=@every 5m` | `LAZADA_FULFILLMENT_LIMIT=20` | |
+| voucher-scheduler | `LAZADA_VOUCHER_SPEC=@every 5m` | `LAZADA_VOUCHER_LIMIT=20` | seller voucher (create) |
 
 ---
 
