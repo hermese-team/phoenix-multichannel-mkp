@@ -1,7 +1,10 @@
 # Lazada Sell-Channel — คู่มือการรัน
 
-ช่องทาง Lazada ประกอบด้วย **5 binary** แต่ละตัวรันแยกกันและใช้ dependency เฉพาะที่ตัวเองต้องการ
+ช่องทาง Lazada ประกอบด้วย **14 binary** แต่ละตัวรันแยกกันและใช้ dependency เฉพาะที่ตัวเองต้องการ
 (ตาม design ใน `lazada.go`: consumer ไม่เปิด Kafka producer, scheduler ไม่เปิด HTTP server ฯลฯ)
+
+จัดกลุ่มได้เป็น 4 พวก: **webhook** (server+consumer), **order sync** (order-scheduler), **product sync** (7 scheduler),
+**fulfillment** (fulfillment-scheduler) และ **utility** (token/ping/category)
 
 ---
 
@@ -10,16 +13,25 @@
 | cmd | หน้าที่ | HTTP Port | Postgres | Redis | Kafka | ต้องมี token ใน Redis |
 |---|---|:---:|:---:|:---:|:---:|:---:|
 | `server` | รับ webhook จาก Lazada → เช็ค idem (Redis) → publish เข้า Kafka | **APP_PORT (8080)** | ✅ | ✅ | ✅ producer | – |
-| `order-scheduler` | poll order list ตาม cron → sync ลง DB | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
-| `product-scheduler` | push price/stock ของ product (pending) ขึ้น Lazada ตาม cron | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
-| `product-create-scheduler` | สร้าง product ใหม่ (pending) บน Lazada ตาม cron | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
-| `consumer` | อ่าน webhook จาก Kafka → ดึง order detail/items → ลง DB | – (ไม่ bind port) | ✅ | ✅ | ✅ consumer group | ✅ |
+| `consumer` | อ่าน webhook จาก Kafka → ดึง order detail/items → ลง DB | – | ✅ | ✅ | ✅ consumer group | ✅ |
+| `order-scheduler` | poll order list ตาม cron → sync ลง DB | – | ✅ | ✅ | – | ✅ |
+| `product-scheduler` | push price/stock ของ product (pending) ขึ้น Lazada | – | ✅ | ✅ | – | ✅ |
+| `product-create-scheduler` | สร้าง product ใหม่ (pending) บน Lazada | – | ✅ | ✅ | – | ✅ |
+| `product-update-scheduler` | อัปเดต attribute ของ product (pending) | – | ✅ | ✅ | – | ✅ |
+| `product-offsale-scheduler` | deactivate / remove product (pending) | – | ✅ | ✅ | – | ✅ |
+| `sellable-stock-scheduler` | adjust/update stock แยกตาม warehouse | – | ✅ | ✅ | – | ✅ |
+| `catalog-scheduler` | pull GetProducts จาก Lazada → reconcile snapshot ลง DB | – | ✅ | ✅ | – | ✅ |
+| `image-scheduler` | upload รูป → set รูปเข้า sku (resumable) | – | ✅ | ✅ | – | ✅ |
+| `fulfillment-scheduler` | pack/RTS (dropship) + own-fleet shipped (pending) | – | ✅ | ✅ | – | ✅ |
 | `lazada-token` | seed access/refresh token ลง Redis (รันครั้งเดียว) | – | – | ✅ | – | – (เป็นตัวเขียน token) |
 | `lazada-ping` | smoke test — เช็ค auth/signing/token กับ Lazada API | – | – | ✅ | – | ✅ |
 | `lazada-category` | browse category tree / attributes (หา category_id + attribute ก่อน seed create) | – | – | – | – | – (no-auth) |
 
 > **มีตัวเดียวที่ใช้ port** คือ `server` → ฟังที่ `:APP_PORT` (default **8080**) เปิด `GET /health` และ `POST /webhook/order`
 > ตัวอื่นเป็น background worker ไม่เปิด port
+>
+> **scheduler ทุกตัวทำงานแบบ pending-queue:** อ่าน row สถานะ `pending` จาก table ของตัวเอง → ยิงขึ้น Lazada →
+> อัปเดตสถานะ (บางตัว resumable เก็บ intermediate state) ยกเว้น `order-scheduler`/`catalog-scheduler` ที่เป็น **inbound poll** (ดึงเข้ามาเก็บ)
 
 ---
 
@@ -28,7 +40,7 @@
 ### 1. Infra (Docker local)
 | บริการ | Address | หมายเหตุ |
 |---|---|---|
-| Postgres | `localhost:5432` | user/pass `admin/admin`, db `marketplace_sync` (schema `lazada_synced_orders` สร้างอัตโนมัติตอน scheduler/consumer เริ่ม) |
+| Postgres | `localhost:5432` | user/pass `admin/admin`, db `marketplace_sync` (table `lazada_*` แต่ละ worker สร้าง/ensure ของตัวเองตอน start) |
 | Redis | `localhost:6379` | เก็บ token + webhook idempotency key |
 | Kafka | `localhost:9092` | topic `lazada.order.webhook` |
 
@@ -88,11 +100,6 @@ go build -o bin/lazada-server ./sellchannel/lazada/cmd/server
 make run-lazada-order-scheduler
 ```
 
-**Product scheduler (push price/stock):**
-```bash
-make run-lazada-product-scheduler
-```
-
 **Consumer (kafka → order sync):**
 ```bash
 make run-lazada-consumer
@@ -101,12 +108,35 @@ make run-lazada-consumer
 > **server กับ consumer เป็นคนละหน้าที่** — server แค่รับ webhook แล้วโยนเข้า Kafka,
 > ต้องมี consumer รันคู่ถึงจะมีคนดึง order detail มาลง DB จริง
 
+**Product / fulfillment scheduler (เลือกเปิดเฉพาะที่ใช้):**
+```bash
+make run-lazada-product-scheduler           # push price/stock
+make run-lazada-product-create-scheduler    # สร้าง product ใหม่
+make run-lazada-product-update-scheduler    # อัปเดต attribute
+make run-lazada-product-offsale-scheduler   # deactivate/remove
+make run-lazada-sellable-stock-scheduler    # adjust/update stock ตาม warehouse
+make run-lazada-catalog-scheduler           # pull GetProducts → reconcile
+make run-lazada-image-scheduler             # upload + set images
+make run-lazada-fulfillment-scheduler       # pack/RTS + own-fleet
+```
+
+> scheduler แต่ละตัวอิสระต่อกัน — เปิดเฉพาะ loop ที่ต้องใช้ ไม่ต้องรันครบทุกตัว
+
+**Category browser (utility, no-auth — หา category_id ก่อน seed create):**
+```bash
+make run-lazada-category                       # แสดง category tree
+LAZADA_CATEGORY_ID=<id> make run-lazada-category  # แสดง attribute ของ category นั้น
+```
+
 ---
 
 ## Build เป็น binary ทั้งหมด
 ```bash
-make build     # สร้าง bin/lazada-{server,order-scheduler,product-scheduler,consumer,token} (+ shopee)
+make build     # สร้าง bin/lazada-* ทั้ง 14 ตัว (+ shopee)
 ```
+> binary ออกมาที่ `bin/lazada-{server,consumer,order-scheduler,product-scheduler,product-create-scheduler,`
+> `product-update-scheduler,product-offsale-scheduler,sellable-stock-scheduler,catalog-scheduler,`
+> `image-scheduler,fulfillment-scheduler,token}` (+ `lazada-category`/`lazada-ping` build จาก source ตรง)
 > แนะนำรันด้วย binary มากกว่า `go run` เวลา dev worker — signal (Ctrl+C) ส่งถึง process ตรง
 > ไม่เหลือ orphan (`go run` ทิ้ง child process ค้างได้)
 
@@ -162,17 +192,26 @@ make kill-consumers     # kill orphan
 | `LAZADA_WEBHOOK_GROUP` | `lazada-webhook-consumer` | consumer group id |
 | `LAZADA_WEBHOOK_TOPIC` | `lazada.order.webhook` | topic ที่ subscribe |
 
-### Scheduler
-| Variable | Default | |
-|---|---|---|
-| `LAZADA_SYNC_SPEC` | `@every 5m` | cron spec |
-| `LAZADA_SYNC_WINDOW` | `24h` | ช่วงเวลาย้อนหลังที่ poll |
-| `LAZADA_SYNC_LIMIT` | `50` | จำนวน order สูงสุดต่อรอบ |
+### Schedulers
+ทุกตัวมี `_SPEC` (cron spec) + `_LIMIT` (จำนวน row ต่อรอบ) เป็น optional override ทั้งหมด
+
+| cmd | `_SPEC` | `_LIMIT` / อื่น ๆ | หมายเหตุ |
+|---|---|---|---|
+| order-scheduler | `LAZADA_SYNC_SPEC=@every 5m` | `LAZADA_SYNC_LIMIT=50` | `LAZADA_SYNC_WINDOW=24h` = ช่วงเวลาย้อนหลังที่ poll |
+| product-scheduler | `LAZADA_PRODUCT_SYNC_SPEC=@every 5m` | `LAZADA_PRODUCT_SYNC_LIMIT=50` | price/stock |
+| product-create-scheduler | `LAZADA_PRODUCT_CREATE_SPEC=@every 5m` | `LAZADA_PRODUCT_CREATE_LIMIT=20` | |
+| product-update-scheduler | `LAZADA_PRODUCT_UPDATE_SPEC=@every 5m` | `LAZADA_PRODUCT_UPDATE_LIMIT=20` | |
+| product-offsale-scheduler | `LAZADA_PRODUCT_OFFSALE_SPEC=@every 5m` | `LAZADA_PRODUCT_OFFSALE_LIMIT=20` | |
+| sellable-stock-scheduler | `LAZADA_SELLABLE_STOCK_SPEC=@every 5m` | `LAZADA_SELLABLE_STOCK_LIMIT=20` | |
+| catalog-scheduler | `LAZADA_CATALOG_SPEC=@every 1h` | `LAZADA_CATALOG_FILTER=all` | inbound pull |
+| image-scheduler | `LAZADA_IMAGE_SPEC=@every 5m` | `LAZADA_IMAGE_LIMIT=20` | |
+| fulfillment-scheduler | `LAZADA_FULFILLMENT_SPEC=@every 5m` | `LAZADA_FULFILLMENT_LIMIT=20` | |
 
 ---
 
 ## Data Flow (ภาพรวม)
 
+### Inbound — order เข้ามา (webhook + poll)
 ```
                        ┌─────────────┐
   Lazada  ──webhook──▶ │   server    │ ──publish──▶  Kafka topic
@@ -182,15 +221,35 @@ make kill-consumers     # kill orphan
                           ▼                                ▼
                        (dedupe)                     ┌─────────────┐
                                                     │  consumer   │
-  Lazada order list ──poll──▶ ┌───────────┐        │             │
-                              │ scheduler │──┐      └─────────────┘
-                              │  @every5m │  │            │ GetOrderDetail
-                              └───────────┘  │            │ GetOrderItems
-                                             ▼            ▼
+  Lazada order list ──poll──▶ ┌────────────────┐   │             │
+                              │ order-scheduler│─┐ └─────────────┘
+                              │    @every5m    │ │       │ GetOrderDetail
+                              └────────────────┘ │       │ GetOrderItems
+                                                 ▼       ▼
                                           ┌──────────────────┐
                                           │    Postgres      │
                                           │ lazada_synced_.. │
                                           └──────────────────┘
+```
+
+### Outbound — push ขึ้น Lazada (pending-queue scheduler)
+```
+  ┌──────────────────┐   read pending   ┌──────────────────────┐   call API   ┌────────┐
+  │    Postgres      │ ───────────────▶ │  *-scheduler         │ ───────────▶ │ Lazada │
+  │ lazada_product_* │                  │  (product/create/    │              └────────┘
+  │ lazada_*_stock   │ ◀─── mark ────── │   update/offsale/    │
+  │ lazada_image_*   │   done/error     │   stock/image/       │  บางตัว resumable:
+  │ lazada_fulfill_* │   (+ mid-state)  │   fulfillment)       │  เก็บ intermediate
+  └──────────────────┘                  └──────────────────────┘  ก่อนก้าวถัดไป
+```
+> token (access/refresh) ทุก scheduler อ่านจาก **Redis** และ refresh อัตโนมัติเมื่อเจอ auth error
+
+### Reconcile — pull snapshot กลับมา (catalog)
+```
+  Lazada GetProducts ──paginate──▶ ┌───────────────────┐ ──upsert──▶  Postgres lazada_catalog_*
+                                   │ catalog-scheduler │
+                                   │     @every1h      │
+                                   └───────────────────┘
 ```
 
 ## การรัน + เก็บ log (วิธีที่ 1 — `tee` ไฟล์)
