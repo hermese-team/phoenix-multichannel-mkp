@@ -20,6 +20,8 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/ordersync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productcreatescheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productcreatesync"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productoffsalescheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productoffsalesync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productscheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productsync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/productupdatescheduler"
@@ -122,6 +124,25 @@ func NewProductUpdateScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisC
 		return nil, err
 	}
 	return productupdatescheduler.New(productupdatesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewProductOffsaleScheduler wires the off-sale scheduler: Postgres (pending
+// take-down actions) and Redis (token store). No Kafka, no HTTP server.
+func NewProductOffsaleScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*productoffsalescheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaProductOffsaleRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return productoffsalescheduler.New(productoffsalesync.New(cfg, tokens, repo), tokens), nil
 }
 
 // NewFulfillmentScheduler wires the fulfillment scheduler: Postgres (orders
