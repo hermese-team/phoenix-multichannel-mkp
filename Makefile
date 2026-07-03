@@ -19,8 +19,11 @@ build: ## Build all sell-channel binaries to bin/
 	$(GO) build -o bin/shopee-consumer  ./sellchannel/shopee/cmd/consumer
 	$(GO) build -o bin/shopee-scheduler ./sellchannel/shopee/cmd/scheduler
 	$(GO) build -o bin/lazada-server    ./sellchannel/lazada/cmd/server
-	$(GO) build -o bin/lazada-scheduler ./sellchannel/lazada/cmd/scheduler
+	$(GO) build -o bin/lazada-order-scheduler ./sellchannel/lazada/cmd/order-scheduler
 	$(GO) build -o bin/lazada-consumer  ./sellchannel/lazada/cmd/consumer
+	$(GO) build -o bin/lazada-product-scheduler ./sellchannel/lazada/cmd/product-scheduler
+	$(GO) build -o bin/lazada-product-create-scheduler ./sellchannel/lazada/cmd/product-create-scheduler
+	$(GO) build -o bin/lazada-fulfillment-scheduler ./sellchannel/lazada/cmd/fulfillment-scheduler
 	$(GO) build -o bin/lazada-token     ./sellchannel/lazada/cmd/lazada-token
 
 .PHONY: check-consumers
@@ -37,13 +40,29 @@ kill-consumers: ## Kill orphaned consumer processes left behind by `go run`
 run-lazada-server: ## Run the lazada server
 	$(GO) run ./sellchannel/lazada/cmd/server
 
-.PHONY: run-lazada-scheduler
-run-lazada-scheduler: ## Run the lazada order-sync scheduler
-	$(GO) run ./sellchannel/lazada/cmd/scheduler
+.PHONY: run-lazada-order-scheduler
+run-lazada-order-scheduler: ## Run the lazada order-sync scheduler
+	$(GO) run ./sellchannel/lazada/cmd/order-scheduler
 
 .PHONY: run-lazada-consumer
 run-lazada-consumer: ## Run the lazada webhook->order consumer
 	$(GO) run ./sellchannel/lazada/cmd/consumer
+
+.PHONY: run-lazada-product-scheduler
+run-lazada-product-scheduler: ## Run the lazada product price/stock sync scheduler
+	$(GO) run ./sellchannel/lazada/cmd/product-scheduler
+
+.PHONY: run-lazada-product-create-scheduler
+run-lazada-product-create-scheduler: ## Run the lazada product-create scheduler
+	$(GO) run ./sellchannel/lazada/cmd/product-create-scheduler
+
+.PHONY: run-lazada-category
+run-lazada-category: ## Browse Lazada category tree / attributes (LAZADA_CATEGORY_ID=<id> for attrs)
+	$(GO) run ./sellchannel/lazada/cmd/lazada-category
+
+.PHONY: run-lazada-fulfillment-scheduler
+run-lazada-fulfillment-scheduler: ## Run the lazada fulfillment scheduler (dropship + own-fleet)
+	$(GO) run ./sellchannel/lazada/cmd/fulfillment-scheduler
 
 .PHONY: seed-lazada-token
 seed-lazada-token: ## Seed Lazada tokens into Redis (REFRESH=<t> [ACCESS=<t>])

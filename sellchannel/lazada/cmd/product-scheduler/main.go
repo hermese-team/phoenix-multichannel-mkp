@@ -22,9 +22,9 @@ func main() {
 	}
 	defer logger.Sync()
 
-	sched, err := lazada.NewScheduler(cfg.Lazada, cfg.Postgres, cfg.Redis)
+	sched, err := lazada.NewProductScheduler(cfg.Lazada, cfg.Postgres, cfg.Redis)
 	if err != nil {
-		log.Fatalf("init lazada scheduler: %v", err)
+		log.Fatalf("init lazada product scheduler: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,6 +37,6 @@ func main() {
 	}()
 
 	if err := sched.Start(ctx); err != nil {
-		log.Fatalf("scheduler error: %v", err)
+		log.Fatalf("product scheduler error: %v", err)
 	}
 }

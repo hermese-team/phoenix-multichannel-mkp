@@ -10,10 +10,13 @@
 | cmd | หน้าที่ | HTTP Port | Postgres | Redis | Kafka | ต้องมี token ใน Redis |
 |---|---|:---:|:---:|:---:|:---:|:---:|
 | `server` | รับ webhook จาก Lazada → เช็ค idem (Redis) → publish เข้า Kafka | **APP_PORT (8080)** | ✅ | ✅ | ✅ producer | – |
-| `scheduler` | poll order list ตาม cron → sync ลง DB | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
+| `order-scheduler` | poll order list ตาม cron → sync ลง DB | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
+| `product-scheduler` | push price/stock ของ product (pending) ขึ้น Lazada ตาม cron | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
+| `product-create-scheduler` | สร้าง product ใหม่ (pending) บน Lazada ตาม cron | – (ไม่ bind port) | ✅ | ✅ | – | ✅ |
 | `consumer` | อ่าน webhook จาก Kafka → ดึง order detail/items → ลง DB | – (ไม่ bind port) | ✅ | ✅ | ✅ consumer group | ✅ |
 | `lazada-token` | seed access/refresh token ลง Redis (รันครั้งเดียว) | – | – | ✅ | – | – (เป็นตัวเขียน token) |
 | `lazada-ping` | smoke test — เช็ค auth/signing/token กับ Lazada API | – | – | ✅ | – | ✅ |
+| `lazada-category` | browse category tree / attributes (หา category_id + attribute ก่อน seed create) | – | – | – | – | – (no-auth) |
 
 > **มีตัวเดียวที่ใช้ port** คือ `server` → ฟังที่ `:APP_PORT` (default **8080**) เปิด `GET /health` และ `POST /webhook/order`
 > ตัวอื่นเป็น background worker ไม่เปิด port
@@ -80,9 +83,14 @@ go build -o bin/lazada-server ./sellchannel/lazada/cmd/server
 ```
 ฟังที่ `:8080` → เช็ค `curl localhost:8080/health`
 
-**Scheduler (poll order list):**
+**Order scheduler (poll order list):**
 ```bash
-make run-lazada-scheduler
+make run-lazada-order-scheduler
+```
+
+**Product scheduler (push price/stock):**
+```bash
+make run-lazada-product-scheduler
 ```
 
 **Consumer (kafka → order sync):**
@@ -97,7 +105,7 @@ make run-lazada-consumer
 
 ## Build เป็น binary ทั้งหมด
 ```bash
-make build     # สร้าง bin/lazada-{server,scheduler,consumer,token} (+ shopee)
+make build     # สร้าง bin/lazada-{server,order-scheduler,product-scheduler,consumer,token} (+ shopee)
 ```
 > แนะนำรันด้วย binary มากกว่า `go run` เวลา dev worker — signal (Ctrl+C) ส่งถึง process ตรง
 > ไม่เหลือ orphan (`go run` ทิ้ง child process ค้างได้)
@@ -202,8 +210,8 @@ set -a; source .env; set +a
 # server (webhook :8080)
 ./bin/lazada-server    2>&1 | tee logs/lazada-server.log
 
-# scheduler
-./bin/lazada-scheduler 2>&1 | tee logs/lazada-scheduler.log
+# order scheduler
+./bin/lazada-order-scheduler 2>&1 | tee logs/lazada-order-scheduler.log
 
 # consumer
 ./bin/lazada-consumer  2>&1 | tee logs/lazada-consumer.log
@@ -219,7 +227,7 @@ set -a; source .env; set +a
 tail -f logs/lazada-consumer.log                              # ไล่ดูสด
 tail -f logs/lazada-server.log   | jq 'select(.level=="error")'   # เฉพาะ error
 tail -f logs/lazada-consumer.log | jq 'select(.msg=="kafka fetch")'  # เฉพาะ event ที่สนใจ
-grep -c '"level":"error"' logs/lazada-scheduler.log          # นับ error ในไฟล์
+grep -c '"level":"error"' logs/lazada-order-scheduler.log    # นับ error ในไฟล์
 ```
 
 > ไฟล์ใน `logs/` ควรใส่ `.gitignore` (อย่า commit log)

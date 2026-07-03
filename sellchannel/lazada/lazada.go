@@ -14,8 +14,14 @@ import (
 	orderUC "github.com/okdev/marketplace-sync/internal/usecase/order"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/client"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/consumer"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/fulfillmentscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/fulfillmentsync"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/orderscheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/ordersync"
-	"github.com/okdev/marketplace-sync/sellchannel/lazada/scheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productcreatescheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productcreatesync"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/lazada/productsync"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/server"
 	"github.com/okdev/marketplace-sync/sellchannel/lazada/tokenstore"
 )
@@ -39,14 +45,14 @@ func NewServer(pgCfg pgAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg ka
 	return server.New(processOrderUC, rdb, producer), nil
 }
 
-// NewScheduler wires the order-sync scheduler: Postgres (sync bookkeeping) and
-// Redis (token store). No Kafka, no HTTP server.
-func NewScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*scheduler.Scheduler, error) {
+// NewOrderScheduler wires the order-sync scheduler: Postgres (sync bookkeeping)
+// and Redis (token store). No Kafka, no HTTP server.
+func NewOrderScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*orderscheduler.Scheduler, error) {
 	syncer, tokens, err := newSyncer(cfg, pgCfg, redisCfg)
 	if err != nil {
 		return nil, err
 	}
-	return scheduler.New(syncer, tokens), nil
+	return orderscheduler.New(syncer, tokens), nil
 }
 
 // NewConsumer wires the webhook->order consumer: Postgres (sync bookkeeping),
@@ -57,6 +63,63 @@ func NewConsumer(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapte
 		return nil, err
 	}
 	return consumer.New(kafkaCfg, syncer), nil
+}
+
+// NewProductScheduler wires the product price/stock sync scheduler: Postgres
+// (product source table) and Redis (token store). No Kafka, no HTTP server.
+func NewProductScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*productscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaProductRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return productscheduler.New(productsync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewProductCreateScheduler wires the product-create scheduler: Postgres
+// (products pending creation) and Redis (token store). No Kafka, no HTTP server.
+func NewProductCreateScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*productcreatescheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaProductCreateRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return productcreatescheduler.New(productcreatesync.New(cfg, tokens, repo), tokens), nil
+}
+
+// NewFulfillmentScheduler wires the fulfillment scheduler: Postgres (orders
+// pending fulfillment) and Redis (token store). No Kafka, no HTTP server.
+func NewFulfillmentScheduler(cfg client.Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config) (*fulfillmentscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokens := tokenstore.New(rdb)
+	repo := pgAdapter.NewLazadaFulfillmentRepository(db)
+	if err := repo.EnsureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	return fulfillmentscheduler.New(fulfillmentsync.New(cfg, tokens, repo), tokens), nil
 }
 
 // newSyncer builds the order syncer shared by the scheduler and the consumer,
