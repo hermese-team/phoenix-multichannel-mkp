@@ -21,7 +21,7 @@ func main() {
 	}
 	defer logger.Sync()
 
-	srv, err := shopee.NewServer(cfg.Postgres)
+	srv, err := shopee.NewServer(cfg.Shopee, cfg.Postgres, cfg.Redis, cfg.Kafka)
 	if err != nil {
 		log.Fatalf("init shopee server: %v", err)
 	}

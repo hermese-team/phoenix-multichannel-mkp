@@ -53,7 +53,7 @@ func Load() (*Config, error) {
 			AuthURL:   getEnv("LAZADA_AUTH_URL", lazadaclient.DefaultAuthURL),
 		},
 		Postgres: postgres.Config{
-			DSN:             getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/marketplace_sync?sslmode=disable"),
+			DSN:             getEnv("POSTGRES_DSN", "postgres://postgres:password@localhost:5432/marketplace?sslmode=disable"),
 			MaxOpenConns:    getEnvInt("POSTGRES_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    getEnvInt("POSTGRES_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: pgLifetime,

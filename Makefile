@@ -99,16 +99,16 @@ seed-lazada-token: ## Seed Lazada tokens into Redis (REFRESH=<t> [ACCESS=<t>])
 	$(GO) run ./sellchannel/lazada/cmd/lazada-token -refresh="$(REFRESH)" -access="$(ACCESS)"
 
 .PHONY: run-server
-run-server: ## Run the shopee server
-	$(GO) run ./sellchannel/shopee/cmd/server
+run-server: ## Run the shopee HTTP server (auto-loads .env, port 8085)
+	@set -a; source .env; set +a; APP_PORT=8085 $(GO) run ./sellchannel/shopee/cmd/server
 
 .PHONY: run-consumer
-run-consumer: ## Run the shopee consumer
-	$(GO) run ./sellchannel/shopee/cmd/consumer
+run-consumer: ## Run the shopee consumer (auto-loads .env)
+	@set -a; source .env; set +a; $(GO) run ./sellchannel/shopee/cmd/consumer
 
 .PHONY: run-scheduler
-run-scheduler: ## Run the shopee scheduler
-	$(GO) run ./sellchannel/shopee/cmd/scheduler
+run-scheduler: ## Run the shopee scheduler (auto-loads .env)
+	@set -a; source .env; set +a; $(GO) run ./sellchannel/shopee/cmd/scheduler
 
 # ── Quality ───────────────────────────────────────────────────────────────────
 

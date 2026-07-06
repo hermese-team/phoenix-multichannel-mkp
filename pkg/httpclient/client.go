@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -49,7 +50,8 @@ func (c *Client) do(req *http.Request, result any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status: %d body: %s", resp.StatusCode, string(body))
 	}
 	return json.NewDecoder(resp.Body).Decode(result)
 }

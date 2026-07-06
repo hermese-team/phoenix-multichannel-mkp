@@ -4,18 +4,30 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	orderUC "github.com/okdev/marketplace-sync/internal/usecase/order"
+
+	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
+	pgAdapter     "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
+	redisAdapter  "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
+	orderUC       "github.com/okdev/marketplace-sync/internal/usecase/order"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
 
 type Server struct {
 	engine       *gin.Engine
 	processOrder *orderUC.ProcessWebhookUsecase
+	shopeeClient *client.Client
+	tokens       *tokenstore.Store
+	producer     *kafkaAdapter.Producer
 }
 
-func New(processOrder *orderUC.ProcessWebhookUsecase) *Server {
+func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokenRepo *pgAdapter.ShopeeTokenRepository, producer *kafkaAdapter.Producer) *Server {
 	s := &Server{
 		engine:       gin.New(),
 		processOrder: processOrder,
+		shopeeClient: shopeeClient,
+		tokens:       tokenstore.New(tokenRepo, rdb),
+		producer:     producer,
 	}
 	s.routes()
 	return s
@@ -28,6 +40,7 @@ func (s *Server) routes() {
 
 	oauth := s.engine.Group("/oauth")
 	{
+		oauth.GET("/authorize", s.oauthAuthorize)
 		oauth.GET("/callback", s.oauthCallback)
 	}
 
@@ -35,6 +48,12 @@ func (s *Server) routes() {
 	{
 		webhook.POST("/order", s.handleOrderWebhook)
 		webhook.POST("/product", s.handleProductWebhook)
+	}
+
+	// Debug endpoints — fetch from Shopee API and publish to Kafka (non-production use)
+	debug := s.engine.Group("/debug")
+	{
+		debug.GET("/order", s.debugFetchOrder)
 	}
 }
 

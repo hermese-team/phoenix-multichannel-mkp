@@ -1,7 +1,7 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /src
 COPY . .
-RUN go build -o app ./marketplaces/shopee/cmd/consumer
+RUN go build -o app ./sellchannel/shopee/cmd/consumer
 
 FROM alpine:3.20
 WORKDIR /app
