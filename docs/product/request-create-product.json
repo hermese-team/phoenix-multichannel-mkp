@@ -1,0 +1,62 @@
+{
+    "Request": {
+        "Product": {
+            "PrimaryCategory": "10002019",
+            "AssociatedSku": "Existing SkuId in seller center",
+            "Images": {
+                "Image": [
+                    "https://my-live-02.slatic.net/p/47b6cb07bd8f80aa3cc34b180b902f3e.jpg"
+                ]
+            },
+            "disableAutoFillAttribute": false,
+            "Attributes": {
+                "propCascade": {
+                    "26": "120013644:162,100006867:160387"
+                },
+                "name": "test 2022 02",
+                "description": "TEST",
+                "brand_id": "30768",
+                "model": "test",
+                "waterproof": "Waterproof",
+                "warranty_type": "Local seller warranty",
+                "warranty": "1 Month",
+                "short_description": "cm x 1efgtecm<br /><brfwefgtek",
+                "Hazmat": "None",
+                "material": "Leather",
+                "laptop_size": "11 - 12 inches",
+                "delivery_option_sof": "No",
+                "gift_wrapping": "Yes",
+                "name_engravement": "Yes",
+                "preorder_enable": "Yes",
+                "preorder_days": "25"
+            },
+            "Skus": {
+                "Sku": [
+                    {
+                        "SellerSku": "test2022 02",
+                        "saleProp": {
+                            "color_family": "Green",
+                            "size": "10"
+                        },
+                        "quantity": "3",
+                        "price": "35",
+                        "special_price": "33",
+                        "special_from_date": "2022-06-20 17:18:31",
+                        "special_to_date": "2025-03-15 17:18:31",
+                        "package_height": "10",
+                        "package_length": "10",
+                        "package_width": "10",
+                        "package_weight": "0.5",
+                        "package_content": "laptop bag",
+                        "Images": {
+                            "Image": [
+                                "https://my-live-02.slatic.net/p/47b6cb07bd8f80aa3cc34b180b902f3e.jpg"
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    }
+}
+

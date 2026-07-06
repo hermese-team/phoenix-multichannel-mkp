@@ -16,8 +16,8 @@ func (c *Client) CreateProduct(ctx context.Context, payloadXML string) (*CreateP
 		return nil, err
 	}
 	var resp CreateProductResponse
-	if len(env.Data) > 0 {
-		if err := json.Unmarshal(env.Data, &resp); err != nil {
+	if len(env.Detail) > 0 {
+		if err := json.Unmarshal(env.Detail, &resp); err != nil {
 			return nil, fmt.Errorf("decode create product: %w", err)
 		}
 	}

@@ -8,7 +8,8 @@ type envelope struct {
 	Message   string          `json:"message"`
 	Type      string          `json:"type"`
 	RequestID string          `json:"request_id"`
-	Data      json.RawMessage `json:"data"`
+	TraceID   string          `json:"_trace_id_"`
+	Detail    json.RawMessage          `json:"detail,omitempty"` // Lazada sometimes returns a string instead of an object
 }
 
 // ── Public return types ─────────────────────────────────────────────────────

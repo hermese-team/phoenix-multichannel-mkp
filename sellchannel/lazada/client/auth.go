@@ -25,7 +25,7 @@ func (c *Client) doSigned(ctx context.Context, apiPath string, apiParams map[str
 	if err != nil {
 		return nil, err
 	}
-	return env.Data, nil
+	return env.Detail, nil
 }
 
 // do signs and performs the request against `gateway`, reads the full body,
@@ -77,7 +77,7 @@ func (c *Client) do(ctx context.Context, method, gateway, accessToken, apiPath s
 		return nil, envelope{}, fmt.Errorf("decode envelope (%s): %w", apiPath, err)
 	}
 	if env.Code != "0" {
-		return respBody, env, &APIError{APIPath: apiPath, Code: env.Code, Message: env.Message}
+		return respBody, env, newAPIError(apiPath, env)
 	}
 	return respBody, env, nil
 }

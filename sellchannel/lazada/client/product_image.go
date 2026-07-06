@@ -48,10 +48,10 @@ func (c *Client) UploadImage(ctx context.Context, fileName string, data []byte) 
 		return "", fmt.Errorf("decode upload envelope: %w", err)
 	}
 	if env.Code != "0" {
-		return "", &APIError{APIPath: "/image/upload", Code: env.Code, Message: env.Message}
+		return "", newAPIError("/image/upload", env)
 	}
 	var dto uploadImageDTO
-	if err := json.Unmarshal(env.Data, &dto); err != nil {
+	if err := json.Unmarshal(env.Detail, &dto); err != nil {
 		return "", fmt.Errorf("decode upload image: %w", err)
 	}
 	return dto.Image.URL, nil

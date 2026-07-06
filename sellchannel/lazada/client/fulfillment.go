@@ -22,11 +22,11 @@ func (c *Client) GetShipmentProviders(ctx context.Context) ([]ShipmentProvider, 
 	var wrapped struct {
 		ShipmentProviders []ShipmentProvider `json:"shipment_providers"`
 	}
-	if err := json.Unmarshal(env.Data, &wrapped); err == nil && len(wrapped.ShipmentProviders) > 0 {
+	if err := json.Unmarshal(env.Detail, &wrapped); err == nil && len(wrapped.ShipmentProviders) > 0 {
 		return wrapped.ShipmentProviders, nil
 	}
 	var arr []ShipmentProvider
-	if err := json.Unmarshal(env.Data, &arr); err != nil {
+	if err := json.Unmarshal(env.Detail, &arr); err != nil {
 		return nil, fmt.Errorf("decode shipment providers: %w", err)
 	}
 	return arr, nil
@@ -53,8 +53,8 @@ func (c *Client) Pack(ctx context.Context, orderItemIDs []string, deliveryType, 
 		return nil, err
 	}
 	var res PackResult
-	if len(env.Data) > 0 {
-		if err := json.Unmarshal(env.Data, &res); err != nil {
+	if len(env.Detail) > 0 {
+		if err := json.Unmarshal(env.Detail, &res); err != nil {
 			return nil, fmt.Errorf("decode pack result: %w", err)
 		}
 	}

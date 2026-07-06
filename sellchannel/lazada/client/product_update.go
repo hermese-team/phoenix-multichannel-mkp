@@ -17,6 +17,6 @@ func (c *Client) UpdateProduct(ctx context.Context, payloadXML string) (*UpdateP
 	// Best-effort decode: the caller may ignore the body, so a successful update
 	// must not look failed just because `data` had an unexpected shape.
 	var resp UpdateProductResponse
-	_ = json.Unmarshal(env.Data, &resp)
+	_ = json.Unmarshal(env.Detail, &resp)
 	return &resp, nil
 }
