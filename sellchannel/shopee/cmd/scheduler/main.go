@@ -25,14 +25,9 @@ func main() {
 	sched := shopee.NewScheduler()
 
 	ctx, cancel := context.WithCancel(context.Background())
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-quit
-		cancel()
-	}()
+	go func() { <-quit; cancel() }()
 
 	log.Println("starting shopee scheduler")
 	sched.Start(ctx)

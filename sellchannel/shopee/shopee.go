@@ -24,8 +24,8 @@ func NewServer(pgCfg pgAdapter.Config) (*server.Server, error) {
 	return server.New(processOrderUC), nil
 }
 
-// NewConsumer wires the product-publish consumer: Postgres (products), the
-// Shopee client and the Kafka consumer.
+// NewConsumer wires the product-publish consumer: Postgres (products),
+// the Shopee client and the Kafka consumer.
 func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.ProductConsumer, error) {
 	db, err := pgAdapter.New(pgCfg)
 	if err != nil {
@@ -41,7 +41,7 @@ func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Confi
 	return consumer.New(kafkaCfg, publishUC), nil
 }
 
-// NewScheduler wires the Shopee scheduler (currently no dependencies).
+// NewScheduler wires the Shopee scheduler.
 func NewScheduler() *scheduler.Scheduler {
 	return scheduler.New()
 }

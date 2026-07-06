@@ -22,23 +22,18 @@ func main() {
 	}
 	defer logger.Sync()
 
-	consumer, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
+	c, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
 	if err != nil {
 		log.Fatalf("init shopee consumer: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-quit
-		cancel()
-	}()
+	go func() { <-quit; cancel() }()
 
 	log.Println("starting shopee consumer")
-	if err := consumer.Start(ctx); err != nil {
+	if err := c.Start(ctx); err != nil {
 		log.Fatalf("consumer error: %v", err)
 	}
 }

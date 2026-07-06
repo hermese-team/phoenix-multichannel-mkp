@@ -26,9 +26,6 @@ func main() {
 		log.Fatalf("init shopee server: %v", err)
 	}
 
-	// marketplace = shoppee.NewMarket()
-	// productUsecase.New(config, marketplace)
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
