@@ -5,6 +5,7 @@ package tokenstore
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	pgAdapter    "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
@@ -12,8 +13,9 @@ import (
 )
 
 const (
-	keyAccessFmt  = "shopee:%d:access_token"
-	keyRefreshFmt = "shopee:%d:refresh_token"
+	keyAccessFmt     = "shopee:%d:access_token"
+	keyRefreshFmt    = "shopee:%d:refresh_token"
+	warnThreshold    = 24 * time.Hour // warn when token expires within 24h
 )
 
 type Store struct {
@@ -35,7 +37,7 @@ func (s *Store) Set(ctx context.Context, shopID int64, access, refresh string, e
 	// 2. warm Redis cache
 	ttl := time.Until(expiredAt)
 	if ttl > 30*time.Second {
-		ttl -= 30 * time.Second // refresh 30s before actual expiry
+		ttl -= 30 * time.Second // evict from Redis 30s before actual expiry
 	}
 	if ttl > 0 {
 		_ = s.rdb.SetMany(ctx, ttl, map[string]string{
@@ -48,6 +50,7 @@ func (s *Store) Set(ctx context.Context, shopID int64, access, refresh string, e
 
 // Get returns the access and refresh tokens for a shop.
 // It checks Redis first; on miss it falls back to Postgres and re-warms Redis.
+// Logs a warning when the token is expiring soon — the caller should renew it via Vault/UI.
 func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, err error) {
 	// fast path: Redis
 	access, _, err = s.rdb.GetString(ctx, fmt.Sprintf(keyAccessFmt, shopID))
@@ -65,8 +68,18 @@ func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, 
 		return "", "", nil // not found
 	}
 
-	// re-warm Redis if token not yet expired
 	ttl := time.Until(rec.ExpiredAt)
+
+	// Warn when token is expired or expiring soon — renew via UI and update Vault.
+	if ttl <= 0 {
+		log.Printf("[tokenstore] WARNING: token for shop %d EXPIRED at %s — please renew via Seller Center",
+			shopID, rec.ExpiredAt.Format(time.RFC3339))
+	} else if ttl < warnThreshold {
+		log.Printf("[tokenstore] WARNING: token for shop %d expires in %.0f minutes (%s) — please renew via Seller Center",
+			shopID, ttl.Minutes(), rec.ExpiredAt.Format(time.RFC3339))
+	}
+
+	// re-warm Redis if token not yet expired
 	if ttl > 30*time.Second {
 		_ = s.rdb.SetMany(ctx, ttl-30*time.Second, map[string]string{
 			fmt.Sprintf(keyAccessFmt, shopID):  rec.AccessToken,
