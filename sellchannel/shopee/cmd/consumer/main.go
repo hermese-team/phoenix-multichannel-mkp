@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/okdev/marketplace-sync/config"
 	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee"
@@ -22,9 +24,14 @@ func main() {
 	}
 	defer logger.Sync()
 
-	c, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
+	productConsumer, err := shopee.NewConsumer(cfg.Shopee, cfg.Postgres, cfg.Kafka)
 	if err != nil {
-		log.Fatalf("init shopee consumer: %v", err)
+		log.Fatalf("init shopee product consumer: %v", err)
+	}
+
+	orderConsumer, err := shopee.NewOrderConsumer(cfg.Shopee, cfg.Postgres, cfg.Redis, cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee order consumer: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -32,8 +39,12 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-quit; cancel() }()
 
-	log.Println("starting shopee consumer")
-	if err := c.Start(ctx); err != nil {
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return productConsumer.Start(ctx) })
+	g.Go(func() error { return orderConsumer.Start(ctx) })
+
+	log.Println("starting shopee consumers")
+	if err := g.Wait(); err != nil {
 		log.Fatalf("consumer error: %v", err)
 	}
 }

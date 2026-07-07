@@ -41,10 +41,11 @@ func Load() (*Config, error) {
 			LogLevel: getEnv("LOG_LEVEL", "info"),
 		},
 		Shopee: shopee.Config{
-			PartnerID: int64(getEnvInt("SHOPEE_PARTNER_ID", 0)),
-			AppKey:    os.Getenv("SHOPEE_APP_KEY"),
-			AppSecret: os.Getenv("SHOPEE_APP_SECRET"),
-			BaseURL:   getEnv("SHOPEE_BASE_URL", "https://partner.shopeemobile.com"),
+			PartnerID:     int64(getEnvInt("SHOPEE_PARTNER_ID", 0)),
+			AppKey:        os.Getenv("SHOPEE_APP_KEY"),
+			AppSecret:     os.Getenv("SHOPEE_APP_SECRET"),
+			BaseURL:       getEnv("SHOPEE_BASE_URL", "https://partner.shopeemobile.com"),
+			WebhookVerify: getEnvBool("SHOPEE_WEBHOOK_VERIFY", false),
 		},
 		Lazada: lazadaclient.Config{
 			AppKey:    os.Getenv("LAZADA_APP_KEY"),
@@ -82,6 +83,16 @@ func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err == nil {
+			return b
 		}
 	}
 	return fallback

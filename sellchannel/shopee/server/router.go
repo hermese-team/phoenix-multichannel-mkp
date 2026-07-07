@@ -14,20 +14,32 @@ import (
 )
 
 type Server struct {
-	engine       *gin.Engine
-	processOrder *orderUC.ProcessWebhookUsecase
-	shopeeClient *client.Client
-	tokens       *tokenstore.Store
-	producer     *kafkaAdapter.Producer
+	engine        *gin.Engine
+	processOrder  *orderUC.ProcessWebhookUsecase
+	shopeeClient  *client.Client
+	tokens        *tokenstore.Store
+	producer      *kafkaAdapter.Producer
+	partnerID     int64
+	appSecret     string
+	webhookVerify bool
 }
 
-func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokenRepo *pgAdapter.ShopeeTokenRepository, producer *kafkaAdapter.Producer) *Server {
+type Config struct {
+	PartnerID     int64
+	AppSecret     string
+	WebhookVerify bool
+}
+
+func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokenRepo *pgAdapter.ShopeeTokenRepository, producer *kafkaAdapter.Producer, cfg Config) *Server {
 	s := &Server{
-		engine:       gin.New(),
-		processOrder: processOrder,
-		shopeeClient: shopeeClient,
-		tokens:       tokenstore.New(tokenRepo, rdb),
-		producer:     producer,
+		engine:        gin.New(),
+		processOrder:  processOrder,
+		shopeeClient:  shopeeClient,
+		tokens:        tokenstore.New(tokenRepo, rdb),
+		producer:      producer,
+		partnerID:     cfg.PartnerID,
+		appSecret:     cfg.AppSecret,
+		webhookVerify: cfg.WebhookVerify,
 	}
 	s.routes()
 	return s
@@ -45,6 +57,7 @@ func (s *Server) routes() {
 	}
 
 	webhook := s.engine.Group("/webhook")
+	webhook.Use(shopeeWebhookAuth(s.partnerID, s.appSecret, s.webhookVerify))
 	{
 		webhook.POST("/order", s.handleOrderWebhook)
 		webhook.POST("/product", s.handleProductWebhook)

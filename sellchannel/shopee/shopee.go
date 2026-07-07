@@ -16,6 +16,7 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/consumer"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/scheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/server"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
 
 // NewServer wires the HTTP server: Postgres (orders), Redis (token store),
@@ -50,7 +51,11 @@ func NewServer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config,
 		BaseURL:   cfg.BaseURL,
 	})
 	processOrderUC := orderUC.NewProcessWebhook(pgAdapter.NewOrderRepository(db))
-	return server.New(processOrderUC, shopeeClient, rdb, tokenRepo, producer), nil
+	return server.New(processOrderUC, shopeeClient, rdb, tokenRepo, producer, server.Config{
+		PartnerID:     cfg.PartnerID,
+		AppSecret:     cfg.AppSecret,
+		WebhookVerify: cfg.WebhookVerify,
+	}), nil
 }
 
 // NewConsumer wires the product-publish consumer.
@@ -67,6 +72,33 @@ func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Confi
 	})
 	publishUC := productUC.NewPublish(pgAdapter.NewProductRepository(db), shopeeClient)
 	return consumer.New(kafkaCfg, publishUC), nil
+}
+
+// NewOrderConsumer wires the order-enrichment consumer.
+// It reads raw webhook events from shopee.order.raw,
+// fetches full order detail from Shopee API, and publishes to shopee.order.detail.
+func NewOrderConsumer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.OrderConsumer, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
+	tokens := tokenstore.New(tokenRepo, rdb)
+	shopeeClient := client.New(client.Config{
+		PartnerID: cfg.PartnerID,
+		AppKey:    cfg.AppKey,
+		AppSecret: cfg.AppSecret,
+		BaseURL:   cfg.BaseURL,
+	})
+	return consumer.NewOrderConsumer(kafkaCfg, shopeeClient, tokens, producer), nil
 }
 
 // NewScheduler wires the Shopee scheduler.

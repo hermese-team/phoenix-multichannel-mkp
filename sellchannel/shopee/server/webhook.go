@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const orderRawTopic = "shopee.order.raw"
+
 func (s *Server) handleOrderWebhook(c *gin.Context) {
 	var payload OrderWebhookRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -24,42 +26,26 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 	shopID := payload.ShopID
 	fmt.Printf("[webhook] received code=%d shop_id=%d order_sn=%s status=%s\n",
 		payload.Code, shopID, orderSN, payload.Data.Status)
+
 	if orderSN == "" || shopID == 0 {
 		return // verification ping — nothing to process
 	}
 
-	// Process asynchronously so we never block Shopee's push timeout.
+	// Publish raw event to Kafka asynchronously.
+	// The order consumer will fetch full order detail from Shopee API.
 	go func() {
-		ctx := context.Background()
-
-		accessToken, _, err := s.tokens.Get(ctx, shopID)
-		if err != nil {
-			fmt.Printf("[webhook] no token for shop %d: %v\n", shopID, err)
+		if s.producer == nil {
 			return
 		}
-		if accessToken == "" {
-			fmt.Printf("[webhook] shop %d not authorized\n", shopID)
-			return
+		raw := OrderRawEvent{
+			ShopID:    shopID,
+			OrderSN:   orderSN,
+			Status:    payload.Data.Status,
+			Timestamp: payload.Timestamp,
 		}
-
-		orders, err := s.shopeeClient.GetOrderDetail(ctx, shopID, accessToken, []string{orderSN})
-		if err != nil {
-			fmt.Printf("[webhook] fetch order %s: %v\n", orderSN, err)
-			return
-		}
-		if len(orders) == 0 {
-			fmt.Printf("[webhook] order %s not found in Shopee\n", orderSN)
-			return
-		}
-
-		order := orders[0]
-		order.ShopID = shopID // Shopee API omits shop_id in order detail response
-
-		if s.producer != nil {
-			msgBytes, _ := json.Marshal(order)
-			if err := s.producer.Publish(ctx, orderWebhookTopic, []byte(orderSN), msgBytes); err != nil {
-				fmt.Printf("[webhook] kafka publish %s: %v\n", orderSN, err)
-			}
+		msgBytes, _ := json.Marshal(raw)
+		if err := s.producer.Publish(context.Background(), orderRawTopic, []byte(orderSN), msgBytes); err != nil {
+			fmt.Printf("[webhook] kafka publish raw %s: %v\n", orderSN, err)
 		}
 	}()
 }

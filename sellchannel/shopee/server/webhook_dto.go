@@ -21,3 +21,12 @@ type ProductWebhookRequest struct {
 		Status string `json:"status"`
 	} `json:"data"`
 }
+
+// OrderRawEvent is published to shopee.order.raw immediately after a webhook push.
+// The consumer will enrich it by calling GetOrderDetail.
+type OrderRawEvent struct {
+	ShopID    int64  `json:"shop_id"`
+	OrderSN   string `json:"order_sn"`
+	Status    string `json:"status"`
+	Timestamp int64  `json:"timestamp"`
+}
