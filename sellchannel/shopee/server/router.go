@@ -58,8 +58,14 @@ func (s *Server) routes() {
 		oauth.GET("/callback", s.oauthCallback)
 	}
 
-	webhook := s.engine.Group("/webhook")
-	webhook.Use(shopeeWebhookAuth(s.partnerID, s.appSecret, s.webhookVerify))
+	webhookAuth := shopeeWebhookAuth(s.partnerID, s.appSecret, s.webhookVerify)
+
+	// Single entry-point: Shopee sends all push codes to one callback URL.
+	// Dispatch by code happens inside the handler.
+	s.engine.POST("/webhook", webhookAuth, s.handleOrderWebhook)
+
+	// Legacy aliases — kept for backward compatibility during migration.
+	webhook := s.engine.Group("/webhook", webhookAuth)
 	{
 		webhook.POST("/order", s.handleOrderWebhook)
 		webhook.POST("/product", s.handleProductWebhook)
