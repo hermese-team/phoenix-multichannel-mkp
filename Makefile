@@ -110,6 +110,10 @@ run-consumer: ## Run the shopee consumer (auto-loads .env)
 run-scheduler: ## Run the shopee scheduler (auto-loads .env)
 	@set -a; source .env; set +a; $(GO) run ./sellchannel/shopee/cmd/scheduler
 
+.PHONY: run-fulfillment-scheduler
+run-fulfillment-scheduler: ## Run the shopee fulfillment scheduler (auto-loads .env)
+	@set -a; source .env; set +a; $(GO) run ./sellchannel/shopee/cmd/fulfillment-scheduler
+
 # ── Quality ───────────────────────────────────────────────────────────────────
 
 .PHONY: test

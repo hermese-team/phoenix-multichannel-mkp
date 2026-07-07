@@ -14,6 +14,8 @@ import (
 	productUC    "github.com/okdev/marketplace-sync/internal/usecase/product"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/consumer"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/fulfillmentscheduler"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/fulfillmentsync"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/scheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/server"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
@@ -98,7 +100,37 @@ func NewOrderConsumer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
-	return consumer.NewOrderConsumer(kafkaCfg, shopeeClient, tokens, producer), nil
+	fulfillmentRepo := pgAdapter.NewShopeeFulfillmentRepository(db)
+	if err := fulfillmentRepo.EnsureSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure shopee fulfillment schema: %w", err)
+	}
+	return consumer.NewOrderConsumer(kafkaCfg, shopeeClient, tokens, producer, fulfillmentRepo), nil
+}
+
+// NewFulfillmentScheduler wires the Shopee fulfillment scheduler.
+func NewFulfillmentScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg kafkaAdapter.Config) (*fulfillmentscheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
+	tokens := tokenstore.New(tokenRepo, rdb)
+	shopeeClient := client.New(client.Config{
+		PartnerID: cfg.PartnerID,
+		AppKey:    cfg.AppKey,
+		AppSecret: cfg.AppSecret,
+		BaseURL:   cfg.BaseURL,
+	})
+	fulfillmentRepo := pgAdapter.NewShopeeFulfillmentRepository(db)
+	if err := fulfillmentRepo.EnsureSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure shopee fulfillment schema: %w", err)
+	}
+	syncer := fulfillmentsync.New(shopeeClient, tokens, fulfillmentRepo)
+	return fulfillmentscheduler.New(syncer, cfg.FulfillmentSpec, cfg.FulfillmentLimit), nil
 }
 
 // NewScheduler wires the Shopee fallback-polling scheduler.

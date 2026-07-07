@@ -9,6 +9,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
+	pgAdapter     "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
@@ -29,19 +30,22 @@ type orderRawEvent struct {
 
 // OrderConsumer reads raw webhook events from shopee.order.raw,
 // fetches full order detail from Shopee API, and publishes to shopee.order.detail.
+// When an order is READY_TO_SHIP it enqueues a fulfillment row for the scheduler.
 type OrderConsumer struct {
-	cfg          kafkaAdapter.Config
-	shopeeClient *client.Client
-	tokens       *tokenstore.Store
-	producer     *kafkaAdapter.Producer
+	cfg             kafkaAdapter.Config
+	shopeeClient    *client.Client
+	tokens          *tokenstore.Store
+	producer        *kafkaAdapter.Producer
+	fulfillmentRepo *pgAdapter.ShopeeFulfillmentRepository // may be nil
 }
 
-func NewOrderConsumer(cfg kafkaAdapter.Config, shopeeClient *client.Client, tokens *tokenstore.Store, producer *kafkaAdapter.Producer) *OrderConsumer {
+func NewOrderConsumer(cfg kafkaAdapter.Config, shopeeClient *client.Client, tokens *tokenstore.Store, producer *kafkaAdapter.Producer, fulfillmentRepo *pgAdapter.ShopeeFulfillmentRepository) *OrderConsumer {
 	return &OrderConsumer{
-		cfg:          cfg,
-		shopeeClient: shopeeClient,
-		tokens:       tokens,
-		producer:     producer,
+		cfg:             cfg,
+		shopeeClient:    shopeeClient,
+		tokens:          tokens,
+		producer:        producer,
+		fulfillmentRepo: fulfillmentRepo,
 	}
 }
 
@@ -118,4 +122,14 @@ func (c *OrderConsumer) process(ctx context.Context, event orderRawEvent) {
 	}
 
 	log.Printf("[order-consumer] published order %s (status=%s)", event.OrderSN, event.Status)
+
+	// Enqueue fulfillment when order is ready to ship.
+	if order.OrderStatus == "READY_TO_SHIP" && c.fulfillmentRepo != nil {
+		if err := c.fulfillmentRepo.Enqueue(ctx, event.ShopID, event.OrderSN,
+			pgAdapter.ShopeeDeliveryShopeeLogistics, ""); err != nil {
+			log.Printf("[order-consumer] enqueue fulfillment %s: %v", event.OrderSN, err)
+		} else {
+			log.Printf("[order-consumer] enqueued fulfillment %s", event.OrderSN)
+		}
+	}
 }
