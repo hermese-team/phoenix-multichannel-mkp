@@ -46,6 +46,8 @@ func Load() (*Config, error) {
 			AppSecret:     os.Getenv("SHOPEE_APP_SECRET"),
 			BaseURL:       getEnv("SHOPEE_BASE_URL", "https://partner.shopeemobile.com"),
 			WebhookVerify: getEnvBool("SHOPEE_WEBHOOK_VERIFY", false),
+			PollSpec:      getEnv("SHOPEE_POLL_SPEC", "@every 5m"),
+			PollWindow:    getEnvDurationSimple("SHOPEE_POLL_WINDOW", 10*time.Minute),
 		},
 		Lazada: lazadaclient.Config{
 			AppKey:    os.Getenv("LAZADA_APP_KEY"),
@@ -86,6 +88,19 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// getEnvDurationSimple parses a duration without returning an error (uses fallback on parse failure).
+func getEnvDurationSimple(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
 
 func getEnvBool(key string, fallback bool) bool {

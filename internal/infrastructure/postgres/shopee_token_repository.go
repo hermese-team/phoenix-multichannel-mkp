@@ -57,6 +57,25 @@ func (r *ShopeeTokenRepository) Upsert(ctx context.Context, shopID int64, access
 	return nil
 }
 
+// FindAllShopIDs returns the shop IDs of all authorized shops.
+func (r *ShopeeTokenRepository) FindAllShopIDs(ctx context.Context) ([]int64, error) {
+	const q = `SELECT shop_id FROM shopee_tokens`
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("find all shop ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan shop id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // FindByShopID returns the token record for a shop, or nil if not found.
 func (r *ShopeeTokenRepository) FindByShopID(ctx context.Context, shopID int64) (*ShopeeToken, error) {
 	const q = `

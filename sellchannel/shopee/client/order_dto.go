@@ -34,6 +34,22 @@ type OrderDetail struct {
 	} `json:"recipient_address"`
 }
 
+type GetOrderListResponse struct {
+	Error     string `json:"error"`
+	Message   string `json:"message"`
+	RequestID string `json:"request_id"`
+	Response  struct {
+		OrderList  []OrderListItem `json:"order_list"`
+		More       bool            `json:"more"`
+		NextCursor string          `json:"next_cursor"`
+	} `json:"response"`
+}
+
+type OrderListItem struct {
+	OrderSN     string `json:"order_sn"`
+	OrderStatus string `json:"order_status"`
+}
+
 type OrderItem struct {
 	ItemID        int64  `json:"item_id"`
 	ItemName      string `json:"item_name"`

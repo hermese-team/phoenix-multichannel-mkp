@@ -22,7 +22,10 @@ func main() {
 	}
 	defer logger.Sync()
 
-	sched := shopee.NewScheduler()
+	sched, err := shopee.NewScheduler(cfg.Shopee, cfg.Postgres, cfg.Redis, cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee scheduler: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	quit := make(chan os.Signal, 1)

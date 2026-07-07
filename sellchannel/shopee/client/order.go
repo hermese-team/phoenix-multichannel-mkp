@@ -9,6 +9,28 @@ import (
 	"github.com/okdev/marketplace-sync/pkg/signer"
 )
 
+// GetOrderList fetches orders updated within [timeFrom, timeTo] (unix seconds).
+// Returns up to pageSize orders per call; for large windows paginate with cursor.
+func (c *Client) GetOrderList(ctx context.Context, shopID int64, accessToken string, timeFrom, timeTo int64) ([]OrderListItem, error) {
+	ts := time.Now().Unix()
+	path := "/api/v2/order/get_order_list"
+	sign := signer.ShopeeSign(c.cfg.PartnerID, c.cfg.AppSecret, path, ts, accessToken, shopID)
+
+	url := fmt.Sprintf(
+		"%s?partner_id=%d&timestamp=%d&sign=%s&shop_id=%d&access_token=%s&time_range_field=update_time&time_from=%d&time_to=%d&page_size=50",
+		path, c.cfg.PartnerID, ts, sign, shopID, accessToken, timeFrom, timeTo,
+	)
+
+	var resp GetOrderListResponse
+	if err := c.http.Get(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("get order list: %w", err)
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("get order list: %s: %s", resp.Error, resp.Message)
+	}
+	return resp.Response.OrderList, nil
+}
+
 // GetOrderDetail fetches order details from Shopee.
 // accessToken must be the shop-level token stored via OAuth.
 func (c *Client) GetOrderDetail(ctx context.Context, shopID int64, accessToken string, orderSNs []string) ([]OrderDetail, error) {

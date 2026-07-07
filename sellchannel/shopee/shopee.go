@@ -101,7 +101,29 @@ func NewOrderConsumer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.
 	return consumer.NewOrderConsumer(kafkaCfg, shopeeClient, tokens, producer), nil
 }
 
-// NewScheduler wires the Shopee scheduler.
-func NewScheduler() *scheduler.Scheduler {
-	return scheduler.New()
+// NewScheduler wires the Shopee fallback-polling scheduler.
+// It polls Shopee order list every pollSpec interval to catch orders missed by webhook.
+func NewScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg kafkaAdapter.Config) (*scheduler.Scheduler, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
+	tokens := tokenstore.New(tokenRepo, rdb)
+	shopeeClient := client.New(client.Config{
+		PartnerID: cfg.PartnerID,
+		AppKey:    cfg.AppKey,
+		AppSecret: cfg.AppSecret,
+		BaseURL:   cfg.BaseURL,
+	})
+	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, producer, rdb, cfg.PollWindow)
+	return scheduler.New(pollJob, cfg.PollSpec), nil
 }

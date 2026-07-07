@@ -8,11 +8,20 @@ import (
 )
 
 type Scheduler struct {
-	cron *cron.Cron
+	cron     *cron.Cron
+	pollJob  *OrderPollJob // may be nil
+	pollSpec string        // cron spec, e.g. "@every 5m"
 }
 
-func New() *Scheduler {
-	return &Scheduler{cron: cron.New()}
+func New(pollJob *OrderPollJob, pollSpec string) *Scheduler {
+	if pollSpec == "" {
+		pollSpec = "@every 5m"
+	}
+	return &Scheduler{
+		cron:     cron.New(),
+		pollJob:  pollJob,
+		pollSpec: pollSpec,
+	}
 }
 
 func (s *Scheduler) Register(spec string, job func()) error {
@@ -30,13 +39,8 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func (s *Scheduler) registerDefaults() {
-	s.cron.AddFunc("@every 1h", func() {
-		log.Println("refreshing shopee tokens...")
-		// TODO: inject and call auth.RefreshTokenUsecase
-	})
-
-	s.cron.AddFunc("@every 5m", func() {
-		log.Println("retrying failed sync jobs...")
-		// TODO: inject and call scheduler.RetryFailedJobUsecase
-	})
+	if s.pollJob != nil {
+		s.cron.AddFunc(s.pollSpec, s.pollJob.Run)
+		log.Printf("shopee order poll registered (spec=%s)", s.pollSpec)
+	}
 }
