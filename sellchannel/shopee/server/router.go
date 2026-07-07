@@ -18,6 +18,7 @@ type Server struct {
 	processOrder  *orderUC.ProcessWebhookUsecase
 	shopeeClient  *client.Client
 	tokens        *tokenstore.Store
+	rdb           *redisAdapter.Client
 	producer      *kafkaAdapter.Producer
 	partnerID     int64
 	appSecret     string
@@ -36,6 +37,7 @@ func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Clien
 		processOrder:  processOrder,
 		shopeeClient:  shopeeClient,
 		tokens:        tokenstore.New(tokenRepo, rdb),
+		rdb:           rdb,
 		producer:      producer,
 		partnerID:     cfg.PartnerID,
 		appSecret:     cfg.AppSecret,

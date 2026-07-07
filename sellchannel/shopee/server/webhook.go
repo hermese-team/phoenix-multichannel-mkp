@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-const orderRawTopic = "shopee.order.raw"
+const (
+	orderRawTopic   = "shopee.order.raw"
+	dedupKeyTTL     = 24 * time.Hour
+)
 
 func (s *Server) handleOrderWebhook(c *gin.Context) {
 	var payload OrderWebhookRequest
@@ -37,6 +41,21 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		if s.producer == nil {
 			return
 		}
+
+		// Idempotency: deduplicate retried webhooks.
+		// Shopee retries with the same timestamp if it doesn't receive 2xx in time.
+		// SetNX returns true = first time seen, false = duplicate.
+		if s.rdb != nil {
+			key := fmt.Sprintf("shopee:webhook:dedup:%s:%d", orderSN, payload.Timestamp)
+			isNew, err := s.rdb.SetNX(context.Background(), key, "1", dedupKeyTTL)
+			if err != nil {
+				fmt.Printf("[webhook] dedup check failed for %s: %v (proceeding)\n", orderSN, err)
+			} else if !isNew {
+				fmt.Printf("[webhook] duplicate skipped %s (ts=%d)\n", orderSN, payload.Timestamp)
+				return
+			}
+		}
+
 		raw := OrderRawEvent{
 			ShopID:    shopID,
 			OrderSN:   orderSN,
