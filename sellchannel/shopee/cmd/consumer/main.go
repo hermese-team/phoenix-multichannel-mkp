@@ -29,6 +29,11 @@ func main() {
 		log.Fatalf("init shopee product consumer: %v", err)
 	}
 
+	classifierConsumer, err := shopee.NewClassifierConsumer(cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee classifier consumer: %v", err)
+	}
+
 	orderConsumer, err := shopee.NewOrderConsumer(cfg.Shopee, cfg.Postgres, cfg.Redis, cfg.Kafka)
 	if err != nil {
 		log.Fatalf("init shopee order consumer: %v", err)
@@ -41,6 +46,7 @@ func main() {
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return productConsumer.Start(ctx) })
+	g.Go(func() error { return classifierConsumer.Start(ctx) })
 	g.Go(func() error { return orderConsumer.Start(ctx) })
 
 	log.Println("starting shopee consumers")

@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
-	pgAdapter     "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	redisAdapter  "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	orderUC       "github.com/okdev/marketplace-sync/internal/usecase/order"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
@@ -31,12 +30,12 @@ type Config struct {
 	WebhookVerify bool
 }
 
-func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokenRepo *pgAdapter.ShopeeTokenRepository, producer *kafkaAdapter.Producer, cfg Config) *Server {
+func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokens *tokenstore.Store, producer *kafkaAdapter.Producer, cfg Config) *Server {
 	s := &Server{
 		engine:        gin.New(),
 		processOrder:  processOrder,
 		shopeeClient:  shopeeClient,
-		tokens:        tokenstore.New(tokenRepo, rdb),
+		tokens:        tokens,
 		rdb:           rdb,
 		producer:      producer,
 		partnerID:     cfg.PartnerID,

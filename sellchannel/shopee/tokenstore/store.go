@@ -15,16 +15,24 @@ import (
 const (
 	keyAccessFmt     = "shopee:%d:access_token"
 	keyRefreshFmt    = "shopee:%d:refresh_token"
-	warnThreshold    = 24 * time.Hour // warn when token expires within 24h
+	warnThreshold    = 24 * time.Hour
+	refreshThreshold = 30 * time.Minute // auto-refresh when < 30 min until expiry
 )
 
-type Store struct {
-	repo *pgAdapter.ShopeeTokenRepository
-	rdb  *redisAdapter.Client
+// Refresher exchanges a Shopee refresh token for a new access/refresh token pair.
+// Implemented by client.Client via the shopeeRefresher adapter in shopee.go.
+type Refresher interface {
+	RefreshToken(ctx context.Context, shopID int64, refreshToken string) (access, refresh string, expireIn int64, err error)
 }
 
-func New(repo *pgAdapter.ShopeeTokenRepository, rdb *redisAdapter.Client) *Store {
-	return &Store{repo: repo, rdb: rdb}
+type Store struct {
+	repo      *pgAdapter.ShopeeTokenRepository
+	rdb       *redisAdapter.Client
+	refresher Refresher // nil = no auto-refresh
+}
+
+func New(repo *pgAdapter.ShopeeTokenRepository, rdb *redisAdapter.Client, refresher Refresher) *Store {
+	return &Store{repo: repo, rdb: rdb, refresher: refresher}
 }
 
 // Set saves tokens to PostgreSQL (source of truth) and warms Redis cache.
@@ -50,7 +58,7 @@ func (s *Store) Set(ctx context.Context, shopID int64, access, refresh string, e
 
 // Get returns the access and refresh tokens for a shop.
 // It checks Redis first; on miss it falls back to Postgres and re-warms Redis.
-// Logs a warning when the token is expiring soon — the caller should renew it via Vault/UI.
+// If the token is expired or expiring within 30 min, it auto-refreshes using the refresh token.
 func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, err error) {
 	// fast path: Redis
 	access, _, err = s.rdb.GetString(ctx, fmt.Sprintf(keyAccessFmt, shopID))
@@ -70,7 +78,35 @@ func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, 
 
 	ttl := time.Until(rec.ExpiredAt)
 
-	// Warn when token is expired or expiring soon — renew via UI and update Vault.
+	// Auto-refresh when expired or expiring soon.
+	if (ttl <= 0 || ttl < refreshThreshold) && s.refresher != nil && rec.RefreshToken != "" {
+		newAccess, newRefresh, expireIn, rfErr := s.refresher.RefreshToken(ctx, shopID, rec.RefreshToken)
+		if rfErr != nil {
+			logger.ErrorContext(ctx, "token auto-refresh failed",
+				"event", "tokenstore.token.refresh.error",
+				"shop_id", shopID,
+				"error", rfErr,
+			)
+		} else if newAccess != "" {
+			newExpiry := time.Now().Add(time.Duration(expireIn) * time.Second)
+			if saveErr := s.Set(ctx, shopID, newAccess, newRefresh, newExpiry); saveErr != nil {
+				logger.WarnContext(ctx, "save refreshed token failed",
+					"event", "tokenstore.token.refresh.save_error",
+					"shop_id", shopID,
+					"error", saveErr,
+				)
+			} else {
+				logger.InfoContext(ctx, "token auto-refreshed",
+					"event", "tokenstore.token.refreshed",
+					"shop_id", shopID,
+					"expires_at", newExpiry.Format(time.RFC3339),
+				)
+				return newAccess, newRefresh, nil
+			}
+		}
+	}
+
+	// Warn when token is still expired after refresh attempt (or no refresher configured).
 	if ttl <= 0 {
 		logger.WarnContext(ctx, "token expired — please renew via Seller Center",
 			"event", "tokenstore.token.expired",
@@ -78,7 +114,7 @@ func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, 
 			"expired_at", rec.ExpiredAt.Format(time.RFC3339),
 		)
 	} else if ttl < warnThreshold {
-		logger.WarnContext(ctx, "token expiring soon — please renew via Seller Center",
+		logger.WarnContext(ctx, "token expiring soon",
 			"event", "tokenstore.token.expiring_soon",
 			"shop_id", shopID,
 			"expires_in_minutes", int(ttl.Minutes()),

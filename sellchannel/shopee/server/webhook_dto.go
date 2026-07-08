@@ -28,5 +28,6 @@ type OrderRawEvent struct {
 	ShopID    int64  `json:"shop_id"`
 	OrderSN   string `json:"order_sn"`
 	Status    string `json:"status"`
+	Code      int    `json:"code"`
 	Timestamp int64  `json:"timestamp"`
 }

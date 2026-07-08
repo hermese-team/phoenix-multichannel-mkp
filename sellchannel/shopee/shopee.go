@@ -12,6 +12,7 @@ import (
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	orderUC      "github.com/okdev/marketplace-sync/internal/usecase/order"
 	productUC    "github.com/okdev/marketplace-sync/internal/usecase/product"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/classifier"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/consumer"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/fulfillmentscheduler"
@@ -20,6 +21,24 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/server"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
+
+// shopeeRefresher adapts client.Client to the tokenstore.Refresher interface.
+type shopeeRefresher struct{ c *client.Client }
+
+func (r *shopeeRefresher) RefreshToken(ctx context.Context, shopID int64, refreshToken string) (string, string, int64, error) {
+	resp, err := r.c.RefreshToken(ctx, shopID, refreshToken)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if resp.Error != "" {
+		return "", "", 0, fmt.Errorf("shopee refresh: %s — %s", resp.Error, resp.Message)
+	}
+	return resp.AccessToken, resp.RefreshToken, resp.ExpireIn, nil
+}
+
+func newTokenStore(repo *pgAdapter.ShopeeTokenRepository, rdb *redisAdapter.Client, c *client.Client) *tokenstore.Store {
+	return tokenstore.New(repo, rdb, &shopeeRefresher{c: c})
+}
 
 // NewServer wires the HTTP server: Postgres (orders), Redis (token store),
 // Kafka producer (debug publish), and Shopee API client (OAuth flow).
@@ -52,8 +71,9 @@ func NewServer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config,
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
+	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
 	processOrderUC := orderUC.NewProcessWebhook(pgAdapter.NewOrderRepository(db))
-	return server.New(processOrderUC, shopeeClient, rdb, tokenRepo, producer, server.Config{
+	return server.New(processOrderUC, shopeeClient, rdb, tokens, producer, server.Config{
 		PartnerID:     cfg.PartnerID,
 		AppSecret:     cfg.AppSecret,
 		WebhookVerify: cfg.WebhookVerify,
@@ -76,6 +96,17 @@ func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Confi
 	return consumer.New(kafkaCfg, publishUC), nil
 }
 
+// NewClassifierConsumer wires the event classifier.
+// It reads shopee.order.raw, maps Shopee push codes to canonical EventTypes,
+// and publishes IngestEvents to order.ingest.shopee.v1.
+func NewClassifierConsumer(kafkaCfg kafkaAdapter.Config) (*classifier.Consumer, error) {
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, fmt.Errorf("classifier producer: %w", err)
+	}
+	return classifier.NewConsumer(kafkaCfg, producer), nil
+}
+
 // NewOrderConsumer wires the order-enrichment consumer.
 // It reads raw webhook events from shopee.order.raw,
 // fetches full order detail from Shopee API, and publishes to shopee.order.detail.
@@ -93,13 +124,13 @@ func NewOrderConsumer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.
 		return nil, err
 	}
 	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
-	tokens := tokenstore.New(tokenRepo, rdb)
 	shopeeClient := client.New(client.Config{
 		PartnerID: cfg.PartnerID,
 		AppKey:    cfg.AppKey,
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
+	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
 	fulfillmentRepo := pgAdapter.NewShopeeFulfillmentRepository(db)
 	if err := fulfillmentRepo.EnsureSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("ensure shopee fulfillment schema: %w", err)
@@ -118,13 +149,13 @@ func NewFulfillmentScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisA
 		return nil, err
 	}
 	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
-	tokens := tokenstore.New(tokenRepo, rdb)
 	shopeeClient := client.New(client.Config{
 		PartnerID: cfg.PartnerID,
 		AppKey:    cfg.AppKey,
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
+	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
 	fulfillmentRepo := pgAdapter.NewShopeeFulfillmentRepository(db)
 	if err := fulfillmentRepo.EnsureSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("ensure shopee fulfillment schema: %w", err)
@@ -149,13 +180,13 @@ func NewScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Conf
 		return nil, err
 	}
 	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
-	tokens := tokenstore.New(tokenRepo, rdb)
 	shopeeClient := client.New(client.Config{
 		PartnerID: cfg.PartnerID,
 		AppKey:    cfg.AppKey,
 		AppSecret: cfg.AppSecret,
 		BaseURL:   cfg.BaseURL,
 	})
+	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
 	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, producer, rdb, cfg.PollWindow)
 	return scheduler.New(pollJob, cfg.PollSpec), nil
 }

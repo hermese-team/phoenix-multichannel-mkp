@@ -15,16 +15,19 @@ import (
 )
 
 const (
-	orderConsumerGroup = "shopee-order-consumer"
-	orderRawTopic      = "shopee.order.raw"
+	orderConsumerGroup = "shopee-order-enricher"
+	orderIngestTopic   = "order.ingest.shopee.v1"
 	orderDetailTopic   = "shopee.order.detail"
 )
 
-// orderRawEvent mirrors server.OrderRawEvent — defined here to avoid circular imports.
-type orderRawEvent struct {
+// orderIngestEvent mirrors classifier.IngestEvent — defined here to avoid circular imports.
+type orderIngestEvent struct {
+	Channel   string `json:"channel"`
+	EventType string `json:"event_type"`
 	ShopID    int64  `json:"shop_id"`
 	OrderSN   string `json:"order_sn"`
 	Status    string `json:"status"`
+	Code      int    `json:"code"`
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -53,7 +56,7 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 	kafkaClient, err := kgo.NewClient(
 		kgo.SeedBrokers(c.cfg.Brokers...),
 		kgo.ConsumerGroup(orderConsumerGroup),
-		kgo.ConsumeTopics(orderRawTopic),
+		kgo.ConsumeTopics(orderIngestTopic),
 	)
 	if err != nil {
 		return err
@@ -62,7 +65,7 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 
 	logger.InfoContext(ctx, "order consumer started",
 		"event", "consumer.started",
-		"topic", orderRawTopic,
+		"topic", orderIngestTopic,
 		"group", orderConsumerGroup,
 	)
 	for {
@@ -88,7 +91,7 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 			continue
 		}
 		fetches.EachRecord(func(rec *kgo.Record) {
-			var event orderRawEvent
+			var event orderIngestEvent
 			if err := json.Unmarshal(rec.Value, &event); err != nil {
 				logger.ErrorContext(ctx, "unmarshal event failed",
 					"event", "consumer.unmarshal.error",
@@ -101,7 +104,7 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 	}
 }
 
-func (c *OrderConsumer) process(ctx context.Context, event orderRawEvent) {
+func (c *OrderConsumer) process(ctx context.Context, event orderIngestEvent) {
 	accessToken, _, err := c.tokens.Get(ctx, event.ShopID)
 	if err != nil {
 		logger.ErrorContext(ctx, "get token failed",
@@ -156,6 +159,7 @@ func (c *OrderConsumer) process(ctx context.Context, event orderRawEvent) {
 		"event", "consumer.order.published",
 		"order_sn", event.OrderSN,
 		"shop_id", event.ShopID,
+		"event_type", event.EventType,
 		"order_status", order.OrderStatus,
 		"topic", orderDetailTopic,
 	)

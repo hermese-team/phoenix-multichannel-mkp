@@ -92,6 +92,7 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		ShopID:    shopID,
 		OrderSN:   orderSN,
 		Status:    payload.Data.Status,
+		Code:      payload.Code,
 		Timestamp: payload.Timestamp,
 	}
 	msgBytes, _ := json.Marshal(raw)
