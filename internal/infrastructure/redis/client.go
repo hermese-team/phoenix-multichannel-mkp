@@ -90,6 +90,12 @@ func (c *Client) SAddWithTTL(ctx context.Context, key string, ttl time.Duration,
 	return err
 }
 
+// TTL returns the remaining time-to-live of a key.
+// Returns a negative value if the key does not exist or has no expiry.
+func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
+	return c.rdb.TTL(ctx, key).Result()
+}
+
 // SIsMember returns true if member belongs to the set at key.
 func (c *Client) SIsMember(ctx context.Context, key, member string) (bool, error) {
 	return c.rdb.SIsMember(ctx, key, member).Result()

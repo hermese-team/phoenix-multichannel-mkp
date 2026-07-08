@@ -60,11 +60,16 @@ func (s *Store) Set(ctx context.Context, shopID int64, access, refresh string, e
 // It checks Redis first; on miss it falls back to Postgres and re-warms Redis.
 // If the token is expired or expiring within 30 min, it auto-refreshes using the refresh token.
 func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, err error) {
-	// fast path: Redis
-	access, _, err = s.rdb.GetString(ctx, fmt.Sprintf(keyAccessFmt, shopID))
+	// fast path: Redis — only use cached token if TTL > refreshThreshold,
+	// so we always refresh before the token expires on Shopee's side.
+	accessKey := fmt.Sprintf(keyAccessFmt, shopID)
+	access, _, err = s.rdb.GetString(ctx, accessKey)
 	if err == nil && access != "" {
-		refresh, _, _ = s.rdb.GetString(ctx, fmt.Sprintf(keyRefreshFmt, shopID))
-		return access, refresh, nil
+		if ttl, ttlErr := s.rdb.TTL(ctx, accessKey); ttlErr == nil && ttl >= refreshThreshold {
+			refresh, _, _ = s.rdb.GetString(ctx, fmt.Sprintf(keyRefreshFmt, shopID))
+			return access, refresh, nil
+		}
+		// TTL < refreshThreshold — fall through to Postgres + auto-refresh
 	}
 
 	// slow path: Postgres

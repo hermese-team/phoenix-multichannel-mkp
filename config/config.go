@@ -47,7 +47,6 @@ func Load() (*Config, error) {
 			BaseURL:       getEnv("SHOPEE_BASE_URL", "https://partner.shopeemobile.com"),
 			WebhookVerify:    getEnvBool("SHOPEE_WEBHOOK_VERIFY", false),
 			PollSpec:         getEnv("SHOPEE_POLL_SPEC", "@every 5m"),
-			PollWindow:       getEnvDurationSimple("SHOPEE_POLL_WINDOW", 10*time.Minute),
 			FulfillmentSpec:  getEnv("SHOPEE_FULFILLMENT_SPEC", "@every 5m"),
 			FulfillmentLimit: getEnvInt("SHOPEE_FULFILLMENT_LIMIT", 20),
 		},
