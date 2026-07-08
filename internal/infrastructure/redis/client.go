@@ -70,3 +70,27 @@ func (c *Client) SetNX(ctx context.Context, key, value string, ttl time.Duration
 func (c *Client) Delete(ctx context.Context, key string) error {
 	return c.rdb.Del(ctx, key).Err()
 }
+
+// SAddWithTTL adds members to a Redis Set and (re-)sets the TTL on the key.
+// Used for safety-net sets where membership and window expiry are coupled:
+//
+//	SADD  safety-net:{channel}:processed {member}
+//	EXPIRE safety-net:{channel}:processed {ttl}
+//
+// The EXPIRE is refreshed on every write so the window slides with traffic.
+func (c *Client) SAddWithTTL(ctx context.Context, key string, ttl time.Duration, members ...string) error {
+	args := make([]interface{}, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	pipe := c.rdb.TxPipeline()
+	pipe.SAdd(ctx, key, args...)
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// SIsMember returns true if member belongs to the set at key.
+func (c *Client) SIsMember(ctx context.Context, key, member string) (bool, error) {
+	return c.rdb.SIsMember(ctx, key, member).Result()
+}

@@ -7,7 +7,7 @@ import (
 	applogger "github.com/okdev/marketplace-sync/pkg/logger"
 )
 
-func logger() gin.HandlerFunc {
+func requestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()

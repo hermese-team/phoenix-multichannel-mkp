@@ -48,7 +48,7 @@ func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Clien
 }
 
 func (s *Server) routes() {
-	s.engine.Use(gin.Recovery(), logger())
+	s.engine.Use(gin.Recovery(), requestLogger())
 
 	s.engine.GET("/health", s.health)
 

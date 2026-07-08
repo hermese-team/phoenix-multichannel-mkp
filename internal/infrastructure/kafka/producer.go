@@ -15,6 +15,8 @@ func NewProducer(cfg Config) (*Producer, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.AllowAutoTopicCreation(),
+		kgo.RequiredAcks(kgo.AllISRAcks()), // quorum commit — all in-sync replicas must ack
+		kgo.DisableIdempotentWrite(),        // AllISRAcks is incompatible with idempotent writes on single-broker setups
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create kafka producer: %w", err)

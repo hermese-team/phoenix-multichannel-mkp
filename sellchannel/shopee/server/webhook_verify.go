@@ -11,6 +11,8 @@ import (
 	"github.com/okdev/marketplace-sync/pkg/signer"
 )
 
+const maxWebhookBodyBytes = 1 * 1024 * 1024 // 1 MB — Shopee payloads are well under 10 KB
+
 // shopeeWebhookAuth verifies Shopee push notification authenticity.
 //
 // Shopee signs each push with:
@@ -21,10 +23,13 @@ import (
 // Set SHOPEE_WEBHOOK_VERIFY=false to skip verification (sandbox/dev only).
 func shopeeWebhookAuth(partnerID int64, appSecret string, verify bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Enforce body size limit before reading — rejects oversized payloads early.
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBodyBytes)
+
 		// Buffer raw body before ShouldBindJSON consumes it.
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "read body failed"})
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
 			return
 		}
 		// Restore for downstream handlers.

@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	orderRawTopic = "shopee.order.raw"
-	dedupKeyTTL   = 24 * time.Hour
+	orderRawTopic  = "shopee.order.raw"
+	dedupKeyTTL    = 24 * time.Hour
+	safetyNetKey   = "safety-net:shopee:processed"
+	safetyNetTTL   = 30 * time.Minute // matches poll fallback scan window
+	publishTimeout = 4 * time.Second  // Shopee expects response within ~5s
 )
 
 func (s *Server) handleOrderWebhook(c *gin.Context) {
@@ -23,9 +26,6 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}
-
-	// Acknowledge immediately — Shopee requires 2xx within a short timeout.
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 
 	orderSN := payload.Data.OrderSN
 	shopID := payload.ShopID
@@ -39,74 +39,99 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		"status", payload.Data.Status,
 	)
 
+	// Verification ping — Shopee sends an empty payload to confirm the URL.
 	if orderSN == "" || shopID == 0 {
-		return // verification ping — nothing to process
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
 	}
 
-	// Publish raw event to Kafka asynchronously.
-	// The order consumer will fetch full order detail from Shopee API.
-	go func() {
-		ctx := context.Background()
+	if s.producer == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
 
-		if s.producer == nil {
-			return
-		}
+	// Use a bounded timeout so we always respond before Shopee's deadline (~5s).
+	ctx, cancel := context.WithTimeout(reqCtx, publishTimeout)
+	defer cancel()
 
-		// Idempotency: deduplicate retried webhooks.
-		// Shopee retries with the same timestamp if it doesn't receive 2xx in time.
-		// SetNX returns true = first time seen, false = duplicate.
-		if s.rdb != nil {
-			key := fmt.Sprintf("shopee:webhook:dedup:%s:%d", orderSN, payload.Timestamp)
-			isNew, err := s.rdb.SetNX(ctx, key, "1", dedupKeyTTL)
-			if err != nil {
-				logger.WarnContext(ctx, "webhook dedup check failed, proceeding",
-					"event", "webhook.dedup.error",
-					"order_sn", orderSN,
-					"error", err,
-				)
-			} else if !isNew {
-				logger.DebugContext(ctx, "webhook duplicate skipped",
-					"event", "webhook.dedup.skip",
-					"order_sn", orderSN,
-					"timestamp", payload.Timestamp,
-				)
-				return
-			}
-		}
-
-		// Skip shops that have not authorized this app — no token, nothing to do.
-		if _, _, err := s.tokens.Get(ctx, shopID); err != nil {
-			logger.WarnContext(ctx, "webhook shop not authorized, skipping",
-				"event", "webhook.shop.unauthorized",
-				"shop_id", shopID,
+	// Idempotency: deduplicate retried webhooks.
+	// Shopee retries with the same timestamp if it doesn't receive 2xx in time.
+	if s.rdb != nil {
+		key := fmt.Sprintf("shopee:webhook:dedup:%s:%d", orderSN, payload.Timestamp)
+		isNew, err := s.rdb.SetNX(ctx, key, "1", dedupKeyTTL)
+		if err != nil {
+			logger.WarnContext(ctx, "webhook dedup check failed, proceeding",
+				"event", "webhook.dedup.error",
 				"order_sn", orderSN,
-			)
-			return
-		}
-
-		raw := OrderRawEvent{
-			ShopID:    shopID,
-			OrderSN:   orderSN,
-			Status:    payload.Data.Status,
-			Timestamp: payload.Timestamp,
-		}
-		msgBytes, _ := json.Marshal(raw)
-		if err := s.producer.Publish(ctx, orderRawTopic, []byte(orderSN), msgBytes); err != nil {
-			logger.ErrorContext(ctx, "webhook kafka publish failed",
-				"event", "webhook.kafka.error",
-				"order_sn", orderSN,
-				"shop_id", shopID,
 				"error", err,
 			)
-		} else {
-			logger.InfoContext(ctx, "webhook published to kafka",
-				"event", "webhook.kafka.published",
+		} else if !isNew {
+			logger.DebugContext(ctx, "webhook duplicate skipped",
+				"event", "webhook.dedup.skip",
 				"order_sn", orderSN,
-				"shop_id", shopID,
-				"topic", orderRawTopic,
+				"timestamp", payload.Timestamp,
+			)
+			// Return 200 so Shopee stops retrying this exact push.
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+			return
+		}
+	}
+
+	// Skip shops that have not authorized this app — no token, nothing to do.
+	if _, _, err := s.tokens.Get(ctx, shopID); err != nil {
+		logger.WarnContext(ctx, "webhook shop not authorized, skipping",
+			"event", "webhook.shop.unauthorized",
+			"shop_id", shopID,
+			"order_sn", orderSN,
+		)
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+
+	raw := OrderRawEvent{
+		ShopID:    shopID,
+		OrderSN:   orderSN,
+		Status:    payload.Data.Status,
+		Timestamp: payload.Timestamp,
+	}
+	msgBytes, _ := json.Marshal(raw)
+
+	// Synchronous publish — response is sent only after Kafka quorum confirms.
+	if err := s.producer.Publish(ctx, orderRawTopic, []byte(orderSN), msgBytes); err != nil {
+		logger.ErrorContext(ctx, "webhook kafka publish failed",
+			"event", "webhook.kafka.error",
+			"order_sn", orderSN,
+			"shop_id", shopID,
+			"error", err,
+		)
+		// Return 200 to avoid Shopee flooding during a Kafka outage.
+		// The poll fallback scheduler will catch missed orders.
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+
+	// Safety-net: record order_sn in a Redis Set so the poll fallback can
+	// skip orders already processed here (cross-referenced via SMISMEMBER).
+	if s.rdb != nil {
+		if err := s.rdb.SAddWithTTL(ctx, safetyNetKey, safetyNetTTL, orderSN); err != nil {
+			// Non-fatal — poll fallback will still work, just may double-process.
+			logger.WarnContext(ctx, "safety-net sadd failed",
+				"event", "webhook.safety_net.error",
+				"order_sn", orderSN,
+				"error", err,
 			)
 		}
-	}()
+	}
+
+	logger.InfoContext(ctx, "webhook published to kafka",
+		"event", "webhook.kafka.published",
+		"order_sn", orderSN,
+		"shop_id", shopID,
+		"topic", orderRawTopic,
+	)
+
+	// 202 Accepted — Kafka quorum confirmed, business processing happens async.
+	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }
 
 func (s *Server) handleProductWebhook(c *gin.Context) {
