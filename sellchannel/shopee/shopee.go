@@ -96,6 +96,25 @@ func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Confi
 	return consumer.New(kafkaCfg, publishUC), nil
 }
 
+// NewIngestionConsumer wires the order ingestion consumer.
+// It reads order.enriched.v1, upserts to the orders table (idempotent ON CONFLICT),
+// and publishes order.received.v1 for downstream consumers.
+func NewIngestionConsumer(pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.IngestionConsumer, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	orderRepo := pgAdapter.NewOrderRepository(db)
+	if err := orderRepo.EnsureSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure orders schema: %w", err)
+	}
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, fmt.Errorf("ingestion producer: %w", err)
+	}
+	return consumer.NewIngestionConsumer(kafkaCfg, orderRepo, producer), nil
+}
+
 // NewClassifierConsumer wires the event classifier.
 // It reads shopee.order.raw, maps Shopee push codes to canonical EventTypes,
 // and publishes IngestEvents to order.ingest.shopee.v1.

@@ -39,6 +39,11 @@ func main() {
 		log.Fatalf("init shopee order consumer: %v", err)
 	}
 
+	ingestionConsumer, err := shopee.NewIngestionConsumer(cfg.Postgres, cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee ingestion consumer: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -48,6 +53,7 @@ func main() {
 	g.Go(func() error { return productConsumer.Start(ctx) })
 	g.Go(func() error { return classifierConsumer.Start(ctx) })
 	g.Go(func() error { return orderConsumer.Start(ctx) })
+	g.Go(func() error { return ingestionConsumer.Start(ctx) })
 
 	log.Println("starting shopee consumers")
 	if err := g.Wait(); err != nil {
