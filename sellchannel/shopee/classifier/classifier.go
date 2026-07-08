@@ -25,6 +25,7 @@ const (
 //
 // Shopee push codes: https://open.shopee.com/documents/v2/v2.push.order_status
 //
+//	0  = poll-discovered (no push code — fall through to status-based classification)
 //	3  = ORDER_STATUS_UPDATE   (status field carries the lifecycle state)
 //	4  = ORDER_TRACKING_NUMBER_UPDATE
 //	5  = ORDER_ITEM_STATUS_UPDATE
@@ -33,7 +34,7 @@ const (
 //	16 = PRODUCT_ITEM_ATTRIBUTE_UPDATED
 func Classify(code int, status string) string {
 	switch code {
-	case 3:
+	case 0, 3: // 0 = poll-discovered, no push — classify by status alone
 		switch status {
 		case "UNPAID":
 			return OrderCreated

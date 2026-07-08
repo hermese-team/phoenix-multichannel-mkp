@@ -94,3 +94,14 @@ func (c *Client) SAddWithTTL(ctx context.Context, key string, ttl time.Duration,
 func (c *Client) SIsMember(ctx context.Context, key, member string) (bool, error) {
 	return c.rdb.SIsMember(ctx, key, member).Result()
 }
+
+// SMIsMember checks whether each member belongs to the set at key and returns
+// a bool slice in the same order as members.
+// Requires Redis 6.2+ (SMISMEMBER command).
+func (c *Client) SMIsMember(ctx context.Context, key string, members ...string) ([]bool, error) {
+	args := make([]interface{}, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	return c.rdb.SMIsMember(ctx, key, args...).Result()
+}
