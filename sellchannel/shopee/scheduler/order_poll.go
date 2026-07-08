@@ -25,6 +25,10 @@ const (
 	// covers every order that the webhook could have marked.
 	cursorOverlap = 30 * time.Minute
 
+	// cursorBuffer is the extra backward overlap applied to the persisted cursor
+	// to handle clock skew and near-boundary orders.
+	cursorBuffer = 5 * time.Minute
+
 	// pollDedupTTL is the SetNX TTL for poll-level idempotency.
 	// Slightly longer than cursorOverlap so a seen key doesn't expire
 	// before the next overlapping window.
@@ -56,26 +60,26 @@ type OrderPollJob struct {
 	shopeeClient *client.Client
 	tokens       *tokenstore.Store
 	tokenRepo    *pgAdapter.ShopeeTokenRepository
+	cursorRepo   *pgAdapter.ShopeePollCursorRepository
 	producer     *kafkaAdapter.Producer
 	rdb          *redisAdapter.Client
-	window       time.Duration
 }
 
 func NewOrderPollJob(
 	shopeeClient *client.Client,
 	tokens *tokenstore.Store,
 	tokenRepo *pgAdapter.ShopeeTokenRepository,
+	cursorRepo *pgAdapter.ShopeePollCursorRepository,
 	producer *kafkaAdapter.Producer,
 	rdb *redisAdapter.Client,
-	window time.Duration,
 ) *OrderPollJob {
 	return &OrderPollJob{
 		shopeeClient: shopeeClient,
 		tokens:       tokens,
 		tokenRepo:    tokenRepo,
+		cursorRepo:   cursorRepo,
 		producer:     producer,
 		rdb:          rdb,
-		window:       window,
 	}
 }
 
@@ -113,29 +117,17 @@ func (j *OrderPollJob) Run() {
 		return
 	}
 
-	// Overlap-safe cursor: look back at least cursorOverlap regardless of the
-	// configured window, so we never miss orders that arrived near the boundary
-	// of the previous poll window.
-	lookback := j.window
-	if lookback < cursorOverlap {
-		lookback = cursorOverlap
-	}
-	now := time.Now()
-	timeFrom := now.Add(-lookback).Unix()
-	timeTo := now.Unix()
-
 	logger.InfoContext(ctx, "poll run started",
 		"event", "order_poll.run.started",
 		"shops", len(shopIDs),
-		"lookback_min", int(lookback.Minutes()),
 	)
 
 	for _, shopID := range shopIDs {
-		j.pollShop(ctx, shopID, timeFrom, timeTo)
+		j.pollShop(ctx, shopID)
 	}
 }
 
-func (j *OrderPollJob) pollShop(ctx context.Context, shopID, timeFrom, timeTo int64) {
+func (j *OrderPollJob) pollShop(ctx context.Context, shopID int64) {
 	accessToken, _, err := j.tokens.Get(ctx, shopID)
 	if err != nil || accessToken == "" {
 		logger.WarnContext(ctx, "no token for shop",
@@ -144,6 +136,38 @@ func (j *OrderPollJob) pollShop(ctx context.Context, shopID, timeFrom, timeTo in
 			"error", err,
 		)
 		return
+	}
+
+	// ── Compute time window from persisted cursor ─────────────────────────────
+	// If a cursor exists for this shop, start from cursor_at - cursorBuffer to
+	// cover clock skew / near-boundary orders. First run falls back to a full
+	// cursorOverlap look-back.
+	now := time.Now()
+	timeFrom := now.Add(-cursorOverlap).Unix() // default: first run
+	timeTo := now.Unix()
+
+	if j.cursorRepo != nil {
+		cursor, err := j.cursorRepo.Load(ctx, shopID)
+		if err != nil {
+			logger.WarnContext(ctx, "load poll cursor failed, using default window",
+				"event", "order_poll.cursor.load_error",
+				"shop_id", shopID,
+				"error", err,
+			)
+		} else if cursor != nil {
+			from := cursor.CursorAt.Add(-cursorBuffer)
+			// Never look back further than the default overlap window.
+			if from.Before(now.Add(-cursorOverlap)) {
+				from = now.Add(-cursorOverlap)
+			}
+			timeFrom = from.Unix()
+			logger.DebugContext(ctx, "poll cursor loaded",
+				"event", "order_poll.cursor.loaded",
+				"shop_id", shopID,
+				"cursor_at", cursor.CursorAt,
+				"time_from", from,
+			)
+		}
 	}
 
 	orders, err := j.shopeeClient.GetOrderList(ctx, shopID, accessToken, timeFrom, timeTo)
@@ -155,6 +179,27 @@ func (j *OrderPollJob) pollShop(ctx context.Context, shopID, timeFrom, timeTo in
 		)
 		return
 	}
+
+	// ── Persist cursor after a successful GetOrderList ────────────────────────
+	// Save now (before publishing) so we advance the window even on partial
+	// Kafka failures. SMISMEMBER + SetNX dedup handle any re-processing.
+	if j.cursorRepo != nil {
+		if saveErr := j.cursorRepo.Save(ctx, shopID, now); saveErr != nil {
+			logger.WarnContext(ctx, "save poll cursor failed",
+				"event", "order_poll.cursor.save_error",
+				"shop_id", shopID,
+				"error", saveErr,
+			)
+			// Non-fatal: continue publishing even if cursor save fails.
+		} else {
+			logger.DebugContext(ctx, "poll cursor saved",
+				"event", "order_poll.cursor.saved",
+				"shop_id", shopID,
+				"cursor_at", now,
+			)
+		}
+	}
+
 	if len(orders) == 0 {
 		return
 	}

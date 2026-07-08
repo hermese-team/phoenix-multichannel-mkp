@@ -206,6 +206,10 @@ func NewScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Conf
 		BaseURL:   cfg.BaseURL,
 	})
 	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
-	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, producer, rdb, cfg.PollWindow)
+	cursorRepo := pgAdapter.NewShopeePollCursorRepository(db)
+	if err := cursorRepo.EnsureSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure shopee_poll_cursors schema: %w", err)
+	}
+	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, cursorRepo, producer, rdb)
 	return scheduler.New(pollJob, cfg.PollSpec), nil
 }
