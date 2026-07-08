@@ -210,6 +210,11 @@ func NewScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Conf
 	if err := cursorRepo.EnsureSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("ensure shopee_poll_cursors schema: %w", err)
 	}
+	scanRepo := pgAdapter.NewSafetyNetScanRepository(db)
+	if err := scanRepo.EnsureSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure safety_net_scan_results schema: %w", err)
+	}
 	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, cursorRepo, producer, rdb)
-	return scheduler.New(pollJob, cfg.PollSpec), nil
+	scanJob := scheduler.NewSafetyNetScanJob(shopeeClient, tokens, tokenRepo, scanRepo, producer, rdb)
+	return scheduler.New(pollJob, cfg.PollSpec, scanJob, cfg.ScanSpec), nil
 }

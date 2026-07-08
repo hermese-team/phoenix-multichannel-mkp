@@ -9,18 +9,25 @@ import (
 
 type Scheduler struct {
 	cron     *cron.Cron
-	pollJob  *OrderPollJob // may be nil
-	pollSpec string        // cron spec, e.g. "@every 5m"
+	pollJob  *OrderPollJob      // may be nil
+	pollSpec string             // cron spec, e.g. "@every 5m"
+	scanJob  *SafetyNetScanJob  // may be nil
+	scanSpec string             // cron spec, e.g. "@every 15m"
 }
 
-func New(pollJob *OrderPollJob, pollSpec string) *Scheduler {
+func New(pollJob *OrderPollJob, pollSpec string, scanJob *SafetyNetScanJob, scanSpec string) *Scheduler {
 	if pollSpec == "" {
 		pollSpec = "@every 5m"
+	}
+	if scanSpec == "" {
+		scanSpec = "@every 15m"
 	}
 	return &Scheduler{
 		cron:     cron.New(),
 		pollJob:  pollJob,
 		pollSpec: pollSpec,
+		scanJob:  scanJob,
+		scanSpec: scanSpec,
 	}
 }
 
@@ -42,5 +49,9 @@ func (s *Scheduler) registerDefaults() {
 	if s.pollJob != nil {
 		s.cron.AddFunc(s.pollSpec, s.pollJob.Run)
 		log.Printf("shopee order poll registered (spec=%s)", s.pollSpec)
+	}
+	if s.scanJob != nil {
+		s.cron.AddFunc(s.scanSpec, s.scanJob.Run)
+		log.Printf("shopee safety-net scan registered (spec=%s)", s.scanSpec)
 	}
 }
