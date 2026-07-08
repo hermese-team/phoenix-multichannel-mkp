@@ -56,6 +56,12 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 			}
 		}
 
+		// Skip shops that have not authorized this app — no token, nothing to do.
+		if _, _, err := s.tokens.Get(context.Background(), shopID); err != nil {
+			fmt.Printf("[webhook] shop %d not authorized, skipping %s\n", shopID, orderSN)
+			return
+		}
+
 		raw := OrderRawEvent{
 			ShopID:    shopID,
 			OrderSN:   orderSN,
