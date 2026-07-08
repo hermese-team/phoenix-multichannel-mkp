@@ -1,16 +1,22 @@
 package server
 
 import (
-	"log"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	applogger "github.com/okdev/marketplace-sync/pkg/logger"
 )
 
 func logger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		log.Printf("%s %s %d %s", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start))
+		applogger.Info("http request",
+			"component", "server",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", c.Writer.Status(),
+			"latency_ms", time.Since(start).Milliseconds(),
+		)
 	}
 }

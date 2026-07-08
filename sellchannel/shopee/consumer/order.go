@@ -3,13 +3,13 @@ package consumer
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
 	pgAdapter     "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
+	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
@@ -60,7 +60,11 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 	}
 	defer kafkaClient.Close()
 
-	log.Println("shopee order consumer started")
+	logger.InfoContext(ctx, "order consumer started",
+		"event", "consumer.started",
+		"topic", orderRawTopic,
+		"group", orderConsumerGroup,
+	)
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -71,7 +75,10 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 				return nil
 			}
 			for _, e := range errs {
-				log.Printf("[order-consumer] fetch error: %v", e.Err)
+				logger.ErrorContext(ctx, "kafka fetch error",
+					"event", "consumer.fetch.error",
+					"error", e.Err,
+				)
 			}
 			select {
 			case <-ctx.Done():
@@ -83,7 +90,10 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 		fetches.EachRecord(func(rec *kgo.Record) {
 			var event orderRawEvent
 			if err := json.Unmarshal(rec.Value, &event); err != nil {
-				log.Printf("[order-consumer] unmarshal: %v", err)
+				logger.ErrorContext(ctx, "unmarshal event failed",
+					"event", "consumer.unmarshal.error",
+					"error", err,
+				)
 				return
 			}
 			c.process(ctx, event)
@@ -94,21 +104,37 @@ func (c *OrderConsumer) Start(ctx context.Context) error {
 func (c *OrderConsumer) process(ctx context.Context, event orderRawEvent) {
 	accessToken, _, err := c.tokens.Get(ctx, event.ShopID)
 	if err != nil {
-		log.Printf("[order-consumer] get token shop %d: %v", event.ShopID, err)
+		logger.ErrorContext(ctx, "get token failed",
+			"event", "consumer.token.error",
+			"shop_id", event.ShopID,
+			"error", err,
+		)
 		return
 	}
 	if accessToken == "" {
-		log.Printf("[order-consumer] shop %d not authorized", event.ShopID)
+		logger.WarnContext(ctx, "shop not authorized",
+			"event", "consumer.shop.unauthorized",
+			"shop_id", event.ShopID,
+		)
 		return
 	}
 
 	orders, err := c.shopeeClient.GetOrderDetail(ctx, event.ShopID, accessToken, []string{event.OrderSN})
 	if err != nil {
-		log.Printf("[order-consumer] get order detail %s: %v", event.OrderSN, err)
+		logger.ErrorContext(ctx, "get order detail failed",
+			"event", "consumer.get_order_detail.error",
+			"order_sn", event.OrderSN,
+			"shop_id", event.ShopID,
+			"error", err,
+		)
 		return
 	}
 	if len(orders) == 0 {
-		log.Printf("[order-consumer] order %s not found", event.OrderSN)
+		logger.WarnContext(ctx, "order not found in shopee",
+			"event", "consumer.order.not_found",
+			"order_sn", event.OrderSN,
+			"shop_id", event.ShopID,
+		)
 		return
 	}
 
@@ -117,19 +143,39 @@ func (c *OrderConsumer) process(ctx context.Context, event orderRawEvent) {
 
 	msgBytes, _ := json.Marshal(order)
 	if err := c.producer.Publish(ctx, orderDetailTopic, []byte(event.OrderSN), msgBytes); err != nil {
-		log.Printf("[order-consumer] publish %s: %v", event.OrderSN, err)
+		logger.ErrorContext(ctx, "kafka publish order detail failed",
+			"event", "consumer.kafka.error",
+			"order_sn", event.OrderSN,
+			"shop_id", event.ShopID,
+			"error", err,
+		)
 		return
 	}
 
-	log.Printf("[order-consumer] published order %s (status=%s)", event.OrderSN, event.Status)
+	logger.InfoContext(ctx, "order detail published",
+		"event", "consumer.order.published",
+		"order_sn", event.OrderSN,
+		"shop_id", event.ShopID,
+		"order_status", order.OrderStatus,
+		"topic", orderDetailTopic,
+	)
 
 	// Enqueue fulfillment when order is ready to ship.
 	if order.OrderStatus == "READY_TO_SHIP" && c.fulfillmentRepo != nil {
 		if err := c.fulfillmentRepo.Enqueue(ctx, event.ShopID, event.OrderSN,
 			pgAdapter.ShopeeDeliveryShopeeLogistics, ""); err != nil {
-			log.Printf("[order-consumer] enqueue fulfillment %s: %v", event.OrderSN, err)
+			logger.ErrorContext(ctx, "enqueue fulfillment failed",
+				"event", "consumer.fulfillment.enqueue.error",
+				"order_sn", event.OrderSN,
+				"shop_id", event.ShopID,
+				"error", err,
+			)
 		} else {
-			log.Printf("[order-consumer] enqueued fulfillment %s", event.OrderSN)
+			logger.InfoContext(ctx, "fulfillment enqueued",
+				"event", "consumer.fulfillment.enqueued",
+				"order_sn", event.OrderSN,
+				"shop_id", event.ShopID,
+			)
 		}
 	}
 }

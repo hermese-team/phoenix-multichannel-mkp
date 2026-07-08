@@ -5,11 +5,11 @@ package tokenstore
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	pgAdapter    "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
+	"github.com/okdev/marketplace-sync/pkg/logger"
 )
 
 const (
@@ -72,11 +72,18 @@ func (s *Store) Get(ctx context.Context, shopID int64) (access, refresh string, 
 
 	// Warn when token is expired or expiring soon — renew via UI and update Vault.
 	if ttl <= 0 {
-		log.Printf("[tokenstore] WARNING: token for shop %d EXPIRED at %s — please renew via Seller Center",
-			shopID, rec.ExpiredAt.Format(time.RFC3339))
+		logger.WarnContext(ctx, "token expired — please renew via Seller Center",
+			"event", "tokenstore.token.expired",
+			"shop_id", shopID,
+			"expired_at", rec.ExpiredAt.Format(time.RFC3339),
+		)
 	} else if ttl < warnThreshold {
-		log.Printf("[tokenstore] WARNING: token for shop %d expires in %.0f minutes (%s) — please renew via Seller Center",
-			shopID, ttl.Minutes(), rec.ExpiredAt.Format(time.RFC3339))
+		logger.WarnContext(ctx, "token expiring soon — please renew via Seller Center",
+			"event", "tokenstore.token.expiring_soon",
+			"shop_id", shopID,
+			"expires_in_minutes", int(ttl.Minutes()),
+			"expired_at", rec.ExpiredAt.Format(time.RFC3339),
+		)
 	}
 
 	// re-warm Redis if token not yet expired

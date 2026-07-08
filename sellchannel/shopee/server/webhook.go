@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/okdev/marketplace-sync/pkg/logger"
 )
 
 const (
-	orderRawTopic   = "shopee.order.raw"
-	dedupKeyTTL     = 24 * time.Hour
+	orderRawTopic = "shopee.order.raw"
+	dedupKeyTTL   = 24 * time.Hour
 )
 
 func (s *Server) handleOrderWebhook(c *gin.Context) {
@@ -28,8 +29,15 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 
 	orderSN := payload.Data.OrderSN
 	shopID := payload.ShopID
-	fmt.Printf("[webhook] received code=%d shop_id=%d order_sn=%s status=%s\n",
-		payload.Code, shopID, orderSN, payload.Data.Status)
+	reqCtx := c.Request.Context()
+
+	logger.InfoContext(reqCtx, "webhook received",
+		"event", "webhook.received",
+		"code", payload.Code,
+		"shop_id", shopID,
+		"order_sn", orderSN,
+		"status", payload.Data.Status,
+	)
 
 	if orderSN == "" || shopID == 0 {
 		return // verification ping — nothing to process
@@ -38,6 +46,8 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 	// Publish raw event to Kafka asynchronously.
 	// The order consumer will fetch full order detail from Shopee API.
 	go func() {
+		ctx := context.Background()
+
 		if s.producer == nil {
 			return
 		}
@@ -47,18 +57,30 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 		// SetNX returns true = first time seen, false = duplicate.
 		if s.rdb != nil {
 			key := fmt.Sprintf("shopee:webhook:dedup:%s:%d", orderSN, payload.Timestamp)
-			isNew, err := s.rdb.SetNX(context.Background(), key, "1", dedupKeyTTL)
+			isNew, err := s.rdb.SetNX(ctx, key, "1", dedupKeyTTL)
 			if err != nil {
-				fmt.Printf("[webhook] dedup check failed for %s: %v (proceeding)\n", orderSN, err)
+				logger.WarnContext(ctx, "webhook dedup check failed, proceeding",
+					"event", "webhook.dedup.error",
+					"order_sn", orderSN,
+					"error", err,
+				)
 			} else if !isNew {
-				fmt.Printf("[webhook] duplicate skipped %s (ts=%d)\n", orderSN, payload.Timestamp)
+				logger.DebugContext(ctx, "webhook duplicate skipped",
+					"event", "webhook.dedup.skip",
+					"order_sn", orderSN,
+					"timestamp", payload.Timestamp,
+				)
 				return
 			}
 		}
 
 		// Skip shops that have not authorized this app — no token, nothing to do.
-		if _, _, err := s.tokens.Get(context.Background(), shopID); err != nil {
-			fmt.Printf("[webhook] shop %d not authorized, skipping %s\n", shopID, orderSN)
+		if _, _, err := s.tokens.Get(ctx, shopID); err != nil {
+			logger.WarnContext(ctx, "webhook shop not authorized, skipping",
+				"event", "webhook.shop.unauthorized",
+				"shop_id", shopID,
+				"order_sn", orderSN,
+			)
 			return
 		}
 
@@ -69,8 +91,20 @@ func (s *Server) handleOrderWebhook(c *gin.Context) {
 			Timestamp: payload.Timestamp,
 		}
 		msgBytes, _ := json.Marshal(raw)
-		if err := s.producer.Publish(context.Background(), orderRawTopic, []byte(orderSN), msgBytes); err != nil {
-			fmt.Printf("[webhook] kafka publish raw %s: %v\n", orderSN, err)
+		if err := s.producer.Publish(ctx, orderRawTopic, []byte(orderSN), msgBytes); err != nil {
+			logger.ErrorContext(ctx, "webhook kafka publish failed",
+				"event", "webhook.kafka.error",
+				"order_sn", orderSN,
+				"shop_id", shopID,
+				"error", err,
+			)
+		} else {
+			logger.InfoContext(ctx, "webhook published to kafka",
+				"event", "webhook.kafka.published",
+				"order_sn", orderSN,
+				"shop_id", shopID,
+				"topic", orderRawTopic,
+			)
 		}
 	}()
 }

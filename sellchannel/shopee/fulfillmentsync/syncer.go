@@ -10,9 +10,9 @@ package fulfillmentsync
 import (
 	"context"
 	"fmt"
-	"log"
 
 	pgAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
+	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
@@ -42,15 +42,28 @@ func (s *Syncer) SyncPending(ctx context.Context, limit int) error {
 	done := 0
 	for _, f := range rows {
 		if err := s.fulfill(ctx, f); err != nil {
-			log.Printf("[fulfillment] order %s shop %d: %v", f.OrderSN, f.ShopID, err)
+			logger.ErrorContext(ctx, "fulfill order failed",
+				"event", "fulfillment.ship.error",
+				"order_sn", f.OrderSN,
+				"shop_id", f.ShopID,
+				"error", err,
+			)
 			if merr := s.repo.MarkError(ctx, f.ID, err.Error()); merr != nil {
-				log.Printf("[fulfillment] mark error id %d: %v", f.ID, merr)
+				logger.ErrorContext(ctx, "mark error failed",
+					"event", "fulfillment.mark_error.error",
+					"id", f.ID,
+					"error", merr,
+				)
 			}
 			continue
 		}
 		done++
 	}
-	log.Printf("[fulfillment] processed %d/%d", done, len(rows))
+	logger.InfoContext(ctx, "fulfillment batch done",
+		"event", "fulfillment.batch.done",
+		"processed", done,
+		"total", len(rows),
+	)
 	return nil
 }
 
@@ -79,7 +92,13 @@ func (s *Syncer) fulfillOwnFleet(ctx context.Context, f pgAdapter.ShopeeFulfillm
 	if err := s.repo.MarkShipped(ctx, f.ID, f.TrackingNumber); err != nil {
 		return err
 	}
-	log.Printf("[fulfillment] shipped (own_fleet) order %s shop %d tracking %s", f.OrderSN, f.ShopID, f.TrackingNumber)
+	logger.InfoContext(ctx, "order shipped",
+		"event", "fulfillment.shipped",
+		"delivery_type", "own_fleet",
+		"order_sn", f.OrderSN,
+		"shop_id", f.ShopID,
+		"tracking_number", f.TrackingNumber,
+	)
 	return nil
 }
 
@@ -108,12 +127,22 @@ func (s *Syncer) fulfillShopeeLogistics(ctx context.Context, f pgAdapter.ShopeeF
 	tracking, err := s.shopeeClient.GetTrackingNumber(ctx, f.ShopID, accessToken, f.OrderSN)
 	if err != nil {
 		// Non-fatal: order is shipped, tracking fetch failure is logged only.
-		log.Printf("[fulfillment] get tracking number order %s: %v (order already shipped)", f.OrderSN, err)
+		logger.WarnContext(ctx, "get tracking number failed (order already shipped)",
+			"event", "fulfillment.tracking.error",
+			"order_sn", f.OrderSN,
+			"error", err,
+		)
 	}
 
 	if err := s.repo.MarkShipped(ctx, f.ID, tracking); err != nil {
 		return err
 	}
-	log.Printf("[fulfillment] shipped (shopee_logistics) order %s shop %d tracking %s", f.OrderSN, f.ShopID, tracking)
+	logger.InfoContext(ctx, "order shipped",
+		"event", "fulfillment.shipped",
+		"delivery_type", "shopee_logistics",
+		"order_sn", f.OrderSN,
+		"shop_id", f.ShopID,
+		"tracking_number", tracking,
+	)
 	return nil
 }
