@@ -276,12 +276,14 @@ sellchannel/shopee/
 │   └── middleware.go            # Request logger
 │
 ├── classifier/                  # Step 4: canonical event type mapping
-│   ├── consumer.go              # Classifier: order.raw.accepted.v1 → order.ingest.shopee.v1
+│   ├── consumer.go              # Classifier: raw.accepted.shopee.v1.dev → order.ingest.shopee.v1.dev
 │   └── classifier.go            # Classify(pushCode int, status string) → EventType string
 │
 ├── consumer/
-│   ├── order.go                 # OrderConsumer: ingest → GetOrderDetail → enriched + fulfillment
-│   ├── ingestion.go             # IngestionConsumer: enriched → orders DB upsert → lifecycle event
+│   ├── order.go                 # OrderConsumer: ingest → GetOrderDetail → enriched (or retry on API failure)
+│   ├── retry.go                 # RetryConsumer: order.retry.v1.dev → exponential backoff → enriched / DLQ
+│   ├── lifecycle.go             # LifecycleConsumer: order.received.v1.dev → order.lifecycle.v1.dev (audit log)
+│   ├── ingestion.go             # IngestionConsumer: enriched → orders DB upsert → order.received.v1.dev
 │   └── product.go               # ProductConsumer (stub)
 │
 ├── scheduler/
@@ -341,7 +343,7 @@ handleOrderWebhook()
                 ├── Redis SetNX shopee:webhook:dedup:{order_sn}:{timestamp} EX 24h
                 │     └── !isNew → duplicate → return
                 ├── Redis SADD safety-net:shopee:processed {order_sn} (TTL 30m)
-                └── Kafka Publish → order.raw.accepted.v1
+                └── Kafka Publish → raw.accepted.shopee.v1.dev
                       key   = order_sn
                       value = { shop_id, order_sn, status, code, timestamp }
         }
@@ -364,7 +366,7 @@ OrderPollJob.Run()  (*/5 * * * *  window=30m)
                 intake.Accept(ctx, "shopee:poll:seen:{sn}", RawEvent{PushCode:0, Status:...})
                     ├── Redis SetNX shopee:poll:seen:{order_sn} EX 24h → skip if seen
                     ├── Redis SADD safety-net:shopee:processed {order_sn}
-                    └── Kafka Publish → order.raw.accepted.v1
+                    └── Kafka Publish → raw.accepted.shopee.v1.dev
 ```
 
 **Cron stagger:** Poll (`*/5 * * * *`) runs at fixed-minute boundaries (:00, :05, …). Scan (`2,17,32,47 * * * *`) runs 2 minutes later, guaranteeing SADD is persisted before SMISMEMBER. Using `@every` for both would cause a race since both timers start at scheduler init time.
@@ -372,46 +374,82 @@ OrderPollJob.Run()  (*/5 * * * *  window=30m)
 ### 3. Classifier → Kafka
 
 ```
-order.raw.accepted.v1
+raw.accepted.shopee.v1.dev
     │
     ▼
 Classifier Consumer  (group: shopee-classifier)
     └── classify(raw)
           ├── Classify(raw.PushCode, raw.Status) → canonical EventType
-          └── Kafka Publish → order.ingest.shopee.v1
+          └── Kafka Publish → order.ingest.shopee.v1.dev
                 { channel, event_type, shop_id, order_sn, status, code, timestamp }
 ```
 
 ### 4. Order Enricher → Kafka
 
 ```
-order.ingest.shopee.v1
+order.ingest.shopee.v1.dev
     │
     ▼
 OrderConsumer  (group: shopee-order-enricher)
     └── process(event)
           ├── Coalesce 2s window — merge duplicate order_sn pushes
           ├── Bulk GetOrderDetail(shop_id, token, [order_sn, ...])  ← ≤50 per call, 5 RPS
-          ├── On success → Kafka Publish → order.enriched.v1
-          ├── On permanent failure (3 retries) → Kafka Publish → order.enriched.shopee.dlq.v1
+          ├── On success → Kafka Publish → order.enriched.v1.dev
+          ├── On token error → Kafka Publish → order.dlq.v1.dev  (permanent: no token, no retry)
+          ├── On API failure → Kafka Publish → order.retry.v1.dev  (attempt=1, RetryConsumer handles backoff)
           └── event_type == ORDER_READY_TO_SHIP
                 └── fulfillmentRepo.Enqueue(shop_id, order_sn, "shopee_logistics", "")
                       INSERT INTO shopee_fulfillment ON CONFLICT DO NOTHING
 ```
 
-### 5. Ingestion Consumer → Database
+### 5. Retry Consumer → Exponential Backoff → Kafka
 
 ```
-order.enriched.v1
+order.retry.v1.dev
+    │
+    ▼
+RetryConsumer  (group: shopee-order-retry)
+    └── process(evt)
+          ├── Wait until NextAttemptAt  ← wall-clock backoff (set by publisher)
+          ├── Get token for shop
+          ├── GetOrderDetail(shop_id, token, order_sn)  ← single order at a time
+          ├── On success → Kafka Publish → order.enriched.v1.dev
+          └── On failure → handleFailure(evt, cause)
+                ├── attempt < MaxAttempts (5) → re-publish to order.retry.v1.dev
+                │     nextAttempt++, delay = backoffFor(nextAttempt)
+                │     backoff schedule: 30s → 2m → 10m → 30m
+                └── attempt >= MaxAttempts → Kafka Publish → order.dlq.v1.dev
+```
+
+### 6. Ingestion Consumer → Database
+
+```
+order.enriched.v1.dev
     │
     ▼
 IngestionConsumer  (group: shopee-order-ingestion)
-    └── upsert(enriched)
+    └── ingestBatch(enriched)
+          ├── Normalize → orderDomain.Order{ShopID, SellChannelID, Status, TotalAmount}
           ├── orderRepo.Upsert(ctx, order)   ← find-or-create across partitions
-          └── Kafka Publish → order.lifecycle.v1
+          └── Kafka Publish → order.received.v1.dev
+                { channel, event_type, shop_id, order_sn, order_id, status, is_new, received_at }
 ```
 
-### 6. Fulfillment Scheduler → Shopee API
+### 7. Lifecycle Consumer → Audit Log
+
+```
+order.received.v1.dev
+    │
+    ▼
+LifecycleConsumer  (group: shopee-order-lifecycle)
+    └── record(msg)
+          ├── Unmarshal ReceivedEvent
+          ├── Build LifecycleEvent { channel, event_type, shop_id, order_sn, order_id, status, is_new, occurred_at }
+          └── Kafka Publish → order.lifecycle.v1.dev
+                (stateless — no DB writes; topic IS the durable append-only audit log)
+```
+
+### 8. Fulfillment Scheduler → Shopee API
 
 ```
 FulfillmentScheduler  (@every 5m, limit=20)
@@ -442,7 +480,7 @@ SafetyNetScanJob.Run()
           ├── SMISMEMBER safety-net:shopee:processed [all order_sn]
           │     ├── in set  → matched → matchedCount++
           │     └── not in set → missed → missedCount++
-          │           └── Publish → order.raw.accepted.v1  (re-inject)
+          │           └── Publish → raw.accepted.shopee.v1.dev  (re-inject)
           ├── Kafka Publish → safety-net.scan.complete.v1
           │     { channel, shop_id, window_from, window_to,
           │       total, matched, missed, reinjected, duration_ms }
@@ -460,7 +498,7 @@ SafetyNetScanJob.Run()
 
 ## Classifier
 
-`classifier.Consumer` อ่านจาก `order.raw.accepted.v1` และ map Shopee push code + order status ไปเป็น canonical `EventType` ก่อน publish ไป `order.ingest.shopee.v1`
+`classifier.Consumer` อ่านจาก `raw.accepted.shopee.v1.dev` และ map Shopee push code + order status ไปเป็น canonical `EventType` ก่อน publish ไป `order.ingest.shopee.v1.dev`
 
 เหตุผล: downstream consumers ไม่ควรรู้จัก Shopee push code โดยตรง — ใช้ canonical type เพื่อ decouple
 
@@ -480,7 +518,7 @@ SafetyNetScanJob.Run()
 
 **GetOrderList `order_status` field:** Shopee ต้องการ `response_optional_fields=order_status` เพื่อ return `OrderStatus` — ถ้าไม่ใส่ status จะเป็น `""` และ classifier จะได้ `ORDER_STATUS_UPDATED` เสมอ. `client.GetOrderList` ใส่ param นี้ให้แล้ว.
 
-**IngestEvent payload** (published to `order.ingest.shopee.v1`):
+**IngestEvent payload** (published to `order.ingest.shopee.v1.dev`):
 
 ```json
 {
@@ -574,7 +612,7 @@ Content-Type: application/json
 
 ### GET /debug/order
 
-Simulate webhook push โดย publish `RawEvent` ไป `order.raw.accepted.v1` ผ่าน `intake.Accept()` (ใช้ได้เฉพาะ dev)
+Simulate webhook push โดย publish `RawEvent` ไป `raw.accepted.shopee.v1.dev` ผ่าน `intake.Accept()` (ใช้ได้เฉพาะ dev)
 
 ```bash
 curl "http://localhost:8085/debug/order?shop_id=225997847&order_sn=2607073G09MYPG"
@@ -586,7 +624,7 @@ curl "http://localhost:8085/debug/order?shop_id=225997847&order_sn=2607073G09MYP
 {
   "shop_id": 225997847,
   "order_sn": "2607073G09MYPG",
-  "kafka_topic": "order.raw.accepted.v1",
+  "kafka_topic": "raw.accepted.shopee.v1.dev",
   "kafka_published": true,
   "message": "raw event published — consumer will fetch order detail from Shopee API"
 }
@@ -755,16 +793,18 @@ CREATE TABLE safety_net_scan_results (
 
 | Topic | Key | Producer | Consumer | หมายเหตุ |
 |---|---|---|---|---|
-| `order.raw.accepted.v1` | `order_sn` | intake.Accept (webhook + poll + scan re-inject) | Classifier | lightweight RawEvent — shop_id + order_sn + status + push_code |
-| `order.ingest.shopee.v1` | `order_sn` | Classifier | OrderConsumer (enricher) | canonical IngestEvent with EventType |
-| `order.enriched.v1` | `order_sn` | OrderConsumer | IngestionConsumer | full order detail from GetOrderDetail |
-| `order.enriched.shopee.dlq.v1` | `order_sn` | OrderConsumer (on failure) | — | DLQ: permanent enrichment failures |
-| `order.lifecycle.v1` | `order_sn` | IngestionConsumer | downstream | DB upsert result event |
+| `raw.accepted.shopee.v1.dev` | `order_sn` | intake.Accept (webhook + poll + scan re-inject) | Classifier | lightweight RawEvent — shop_id + order_sn + status + push_code |
+| `order.ingest.shopee.v1.dev` | `order_sn` | Classifier | OrderConsumer (enricher) | canonical IngestEvent with EventType |
+| `order.enriched.v1.dev` | `order_sn` | OrderConsumer / RetryConsumer | IngestionConsumer | full order detail from GetOrderDetail |
+| `order.retry.v1.dev` | `order_sn` | OrderConsumer (on API failure) | RetryConsumer | exponential backoff retry: 30s → 2m → 10m → 30m, max 5 attempts |
+| `order.dlq.v1.dev` | `order_sn` | RetryConsumer (exhausted) / OrderConsumer (token error) | — | DLQ: permanent failures after all retry attempts exhausted |
+| `order.received.v1.dev` | `order_sn` | IngestionConsumer | LifecycleConsumer | signals successful normalize + PostgreSQL upsert |
+| `order.lifecycle.v1.dev` | `order_sn` | LifecycleConsumer | downstream | append-only audit log; topic IS the durable history record |
 | `safety-net.scan.complete.v1` | `shop_id` | SafetyNetScanJob | — | governance: scan run metrics per shop |
 
 **ดู messages ใน Redpanda Console:** `http://localhost:8081`
 
-**order.raw.accepted.v1 payload:**
+**raw.accepted.shopee.v1.dev payload:**
 
 ```json
 {
@@ -776,7 +816,7 @@ CREATE TABLE safety_net_scan_results (
 }
 ```
 
-**order.ingest.shopee.v1 payload:**
+**order.ingest.shopee.v1.dev payload:**
 
 ```json
 {
