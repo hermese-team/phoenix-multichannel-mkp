@@ -1,12 +1,12 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 )
 
 type debugFetchOrderRequest struct {
@@ -36,15 +36,15 @@ func (s *Server) debugFetchOrder(c *gin.Context) {
 	}
 
 	// 2. publish raw event to order.raw.accepted.v1 — consumer will fetch full detail
-	raw := OrderRawEvent{
-		ShopID:    req.ShopID,
-		OrderSN:   req.OrderSN,
-		Status:    "DEBUG",
-		Timestamp: time.Now().Unix(),
-	}
-	if s.producer != nil {
-		payload, _ := json.Marshal(raw)
-		if err := s.producer.Publish(c.Request.Context(), orderRawTopic, []byte(req.OrderSN), payload); err != nil {
+	if s.intake != nil {
+		evt := intake.RawEvent{
+			ShopID:    req.ShopID,
+			OrderSN:   req.OrderSN,
+			Status:    "DEBUG",
+			Timestamp: time.Now().Unix(),
+		}
+		pushID := fmt.Sprintf("shopee:debug:%s:%d", req.OrderSN, evt.Timestamp)
+		if _, err := s.intake.Accept(c.Request.Context(), pushID, evt); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "kafka publish: " + err.Error()})
 			return
 		}
@@ -53,8 +53,8 @@ func (s *Server) debugFetchOrder(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"shop_id":         req.ShopID,
 		"order_sn":        req.OrderSN,
-		"kafka_topic":     orderRawTopic,
-		"kafka_published": s.producer != nil,
+		"kafka_topic":     intake.OrderRawTopic,
+		"kafka_published": s.intake != nil,
 		"message":         "raw event published — consumer will fetch order detail from Shopee API",
 	})
 }

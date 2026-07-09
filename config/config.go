@@ -46,8 +46,11 @@ func Load() (*Config, error) {
 			AppSecret:     os.Getenv("SHOPEE_APP_SECRET"),
 			BaseURL:       getEnv("SHOPEE_BASE_URL", "https://partner.shopeemobile.com"),
 			WebhookVerify:    getEnvBool("SHOPEE_WEBHOOK_VERIFY", false),
-			PollSpec:         getEnv("SHOPEE_POLL_SPEC", "@every 5m"),
-			ScanSpec:         getEnv("SHOPEE_SCAN_SPEC", "@every 15m"),
+			// Poll runs at :00,:05,:10,...,:55 (fixed-minute boundaries).
+			// Scan runs at :02,:17,:32,:47 — always 2 min after a poll tick so
+			// intake.Accept SADD has time to persist before SMISMEMBER runs.
+			PollSpec: getEnv("SHOPEE_POLL_SPEC", "*/5 * * * *"),
+			ScanSpec: getEnv("SHOPEE_SCAN_SPEC", "2,17,32,47 * * * *"),
 			FulfillmentSpec:  getEnv("SHOPEE_FULFILLMENT_SPEC", "@every 5m"),
 			FulfillmentLimit: getEnvInt("SHOPEE_FULFILLMENT_LIMIT", 20),
 		},

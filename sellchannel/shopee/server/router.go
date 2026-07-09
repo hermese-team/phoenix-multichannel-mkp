@@ -5,10 +5,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
-	redisAdapter  "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
-	orderUC       "github.com/okdev/marketplace-sync/internal/usecase/order"
+	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
+	orderUC      "github.com/okdev/marketplace-sync/internal/usecase/order"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
 
@@ -18,7 +18,7 @@ type Server struct {
 	shopeeClient  *client.Client
 	tokens        *tokenstore.Store
 	rdb           *redisAdapter.Client
-	producer      *kafkaAdapter.Producer
+	intake        *intake.Intake // W component: dedup + safety-net + Kafka publish
 	partnerID     int64
 	appSecret     string
 	webhookVerify bool
@@ -30,14 +30,14 @@ type Config struct {
 	WebhookVerify bool
 }
 
-func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokens *tokenstore.Store, producer *kafkaAdapter.Producer, cfg Config) *Server {
+func New(processOrder *orderUC.ProcessWebhookUsecase, shopeeClient *client.Client, rdb *redisAdapter.Client, tokens *tokenstore.Store, wIntake *intake.Intake, cfg Config) *Server {
 	s := &Server{
 		engine:        gin.New(),
 		processOrder:  processOrder,
 		shopeeClient:  shopeeClient,
 		tokens:        tokens,
 		rdb:           rdb,
-		producer:      producer,
+		intake:        wIntake,
 		partnerID:     cfg.PartnerID,
 		appSecret:     cfg.AppSecret,
 		webhookVerify: cfg.WebhookVerify,

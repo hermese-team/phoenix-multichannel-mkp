@@ -11,6 +11,7 @@ import (
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
 
@@ -145,7 +146,7 @@ func (j *SafetyNetScanJob) scanShop(ctx context.Context, shopID int64, windowFro
 		for i, o := range orders {
 			sns[i] = o.OrderSN
 		}
-		inSafetyNet, err := j.rdb.SMIsMember(ctx, safetyNetKey, sns...)
+		inSafetyNet, err := j.rdb.SMIsMember(ctx, intake.SafetyNetKey, sns...)
 		if err != nil {
 			logger.WarnContext(ctx, "scan SMISMEMBER failed",
 				"event", "safety_net_scan.smismember.error",
@@ -160,15 +161,15 @@ func (j *SafetyNetScanJob) scanShop(ctx context.Context, shopID int64, windowFro
 				}
 				// Missed by webhook — re-inject into the pipeline.
 				missedCount++
-				raw := orderRawEvent{
+				raw := intake.RawEvent{
 					ShopID:    shopID,
 					OrderSN:   o.OrderSN,
 					Status:    o.OrderStatus,
-					Code:      0,
+					PushCode:  0,
 					Timestamp: time.Now().Unix(),
 				}
 				msgBytes, _ := json.Marshal(raw)
-				if err := j.producer.Publish(ctx, orderRawTopic, []byte(o.OrderSN), msgBytes); err != nil {
+				if err := j.producer.Publish(ctx, intake.OrderRawTopic, []byte(o.OrderSN), msgBytes); err != nil {
 					logger.ErrorContext(ctx, "scan re-inject failed",
 						"event", "safety_net_scan.reinject.error",
 						"order_sn", o.OrderSN,

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 )
 
 // newTestRedis connects to the local Redis used by docker-compose.
@@ -59,7 +60,7 @@ func TestPollSetNXDedup(t *testing.T) {
 	key := fmt.Sprintf("shopee:poll:seen:TEST_%d", time.Now().UnixNano())
 	t.Cleanup(func() { _ = rdb.Delete(ctx, key) })
 
-	isNew, err := rdb.SetNX(ctx, key, "1", pollDedupTTL)
+	isNew, err := rdb.SetNX(ctx, key, "1", intake.DedupTTL)
 	if err != nil {
 		t.Fatalf("SetNX (first): %v", err)
 	}
@@ -67,7 +68,7 @@ func TestPollSetNXDedup(t *testing.T) {
 		t.Error("first SetNX: expected isNew=true")
 	}
 
-	isNew2, err := rdb.SetNX(ctx, key, "1", pollDedupTTL)
+	isNew2, err := rdb.SetNX(ctx, key, "1", intake.DedupTTL)
 	if err != nil {
 		t.Fatalf("SetNX (second): %v", err)
 	}

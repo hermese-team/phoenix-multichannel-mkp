@@ -2,26 +2,20 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
 	pgAdapter    "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	redisAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/redis"
 	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
 
 const (
-	orderRawTopic = "order.raw.accepted.v1"
-
-	// safetyNetKey must match the key written by the webhook handler.
-	safetyNetKey = "safety-net:shopee:processed"
-
 	// cursorOverlap is the minimum look-back window for each poll run.
-	// Must be >= safetyNetTTL (30 min) so the SMISMEMBER cross-reference
+	// Must be >= intake.SafetyNetTTL (30 min) so the SMISMEMBER cross-reference
 	// covers every order that the webhook could have marked.
 	cursorOverlap = 30 * time.Minute
 
@@ -29,39 +23,25 @@ const (
 	// to handle clock skew and near-boundary orders.
 	cursorBuffer = 5 * time.Minute
 
-	// pollDedupTTL is the SetNX TTL for poll-level idempotency.
-	// Slightly longer than cursorOverlap so a seen key doesn't expire
-	// before the next overlapping window.
-	pollDedupTTL = 35 * time.Minute
-
 	// leaseTTL is the distributed lock TTL.
-	// Set to slightly less than the poll interval (e.g. 4 min for @every 5m)
+	// Set to slightly less than the poll interval (4 min for a 5-min poll spec)
 	// so the lock auto-expires if a pod crashes mid-poll.
 	leaseTTL = 4 * time.Minute
 	leaseKey = "shopee:poll:lease"
 )
 
-// orderRawEvent mirrors server.OrderRawEvent — defined here to avoid circular imports.
-type orderRawEvent struct {
-	ShopID    int64  `json:"shop_id"`
-	OrderSN   string `json:"order_sn"`
-	Status    string `json:"status"`
-	Code      int    `json:"code"` // 0 = poll-discovered (no push notification)
-	Timestamp int64  `json:"timestamp"`
-}
-
-// OrderPollJob polls Shopee order list for all authorized shops and publishes
-// any missed orders to shopee.order.raw so the consumer can enrich them.
+// OrderPollJob polls Shopee order list for all authorized shops and forwards
+// any missed orders through the W (intake) component, mirroring the webhook path.
 //
 // Safety layers (innermost to outermost):
 //  1. SMISMEMBER on safety-net:shopee:processed — skip webhook-handled orders
-//  2. SetNX shopee:poll:seen:{sn}              — poll-level dedup
+//  2. intake.Accept SetNX shopee:poll:seen:{sn} — poll-level dedup via W
 type OrderPollJob struct {
 	shopeeClient *client.Client
 	tokens       *tokenstore.Store
 	tokenRepo    *pgAdapter.ShopeeTokenRepository
 	cursorRepo   *pgAdapter.ShopeePollCursorRepository
-	producer     *kafkaAdapter.Producer
+	intake       *intake.Intake
 	rdb          *redisAdapter.Client
 }
 
@@ -70,7 +50,7 @@ func NewOrderPollJob(
 	tokens *tokenstore.Store,
 	tokenRepo *pgAdapter.ShopeeTokenRepository,
 	cursorRepo *pgAdapter.ShopeePollCursorRepository,
-	producer *kafkaAdapter.Producer,
+	wIntake *intake.Intake,
 	rdb *redisAdapter.Client,
 ) *OrderPollJob {
 	return &OrderPollJob{
@@ -78,7 +58,7 @@ func NewOrderPollJob(
 		tokens:       tokens,
 		tokenRepo:    tokenRepo,
 		cursorRepo:   cursorRepo,
-		producer:     producer,
+		intake:       wIntake,
 		rdb:          rdb,
 	}
 }
@@ -212,7 +192,7 @@ func (j *OrderPollJob) pollShop(ctx context.Context, shopID int64) {
 		for i, o := range orders {
 			sns[i] = o.OrderSN
 		}
-		inSafetyNet, err := j.rdb.SMIsMember(ctx, safetyNetKey, sns...)
+		inSafetyNet, err := j.rdb.SMIsMember(ctx, intake.SafetyNetKey, sns...)
 		if err != nil {
 			logger.WarnContext(ctx, "safety-net SMISMEMBER failed, falling back to SetNX only",
 				"event", "order_poll.safety_net.error",
@@ -244,50 +224,33 @@ func (j *OrderPollJob) pollShop(ctx context.Context, shopID int64) {
 		return
 	}
 
-	// ── Layer 2: SetNX poll-level dedup ──────────────────────────────────────
-	// Prevents the same order from being published multiple times within a
-	// single overlapping poll window (e.g. two overlapping 30-min windows).
+	// ── Layer 2: Forward through W (intake) ──────────────────────────────────
+	// intake.Accept handles SetNX dedup, safety-net SADD, and Kafka publish —
+	// the same path as the webhook handler (spec step 5: A→W).
 	published := 0
 	for _, o := range orders {
-		if j.rdb != nil {
-			key := fmt.Sprintf("shopee:poll:seen:%s", o.OrderSN)
-			isNew, err := j.rdb.SetNX(ctx, key, "1", pollDedupTTL)
-			if err == nil && !isNew {
-				continue
-			}
-		}
-
-		raw := orderRawEvent{
+		evt := intake.RawEvent{
 			ShopID:    shopID,
 			OrderSN:   o.OrderSN,
 			Status:    o.OrderStatus,
-			Code:      0, // poll-discovered; classifier handles code=0 via status
+			PushCode:  0, // poll-discovered; classifier handles code=0 via status
 			Timestamp: time.Now().Unix(),
 		}
-		msgBytes, _ := json.Marshal(raw)
-		if err := j.producer.Publish(ctx, orderRawTopic, []byte(o.OrderSN), msgBytes); err != nil {
-			logger.ErrorContext(ctx, "publish poll order failed",
-				"event", "order_poll.kafka.error",
+		// pushID uses poll-specific prefix so it doesn't collide with webhook dedup keys.
+		pushID := fmt.Sprintf("shopee:poll:seen:%s", o.OrderSN)
+		alreadyProcessed, err := j.intake.Accept(ctx, pushID, evt)
+		if err != nil {
+			logger.ErrorContext(ctx, "poll intake failed",
+				"event", "order_poll.intake.error",
 				"order_sn", o.OrderSN,
 				"shop_id", shopID,
 				"error", err,
 			)
 			continue
 		}
-
-		// Mirror webhook handler: SADD to safety-net after successful publish so
-		// the safety-net scan's SMISMEMBER sees poll-discovered orders too.
-		// Without this, the scan treats poll orders as "missed" and re-injects them.
-		if j.rdb != nil {
-			if err := j.rdb.SAddWithTTL(ctx, safetyNetKey, safetyNetTTL, o.OrderSN); err != nil {
-				logger.WarnContext(ctx, "poll safety-net sadd failed",
-					"event", "order_poll.safety_net.sadd_error",
-					"order_sn", o.OrderSN,
-					"error", err,
-				)
-			}
+		if alreadyProcessed {
+			continue
 		}
-
 		published++
 	}
 

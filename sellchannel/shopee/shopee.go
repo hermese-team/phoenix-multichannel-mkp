@@ -17,6 +17,7 @@ import (
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/consumer"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/fulfillmentscheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/fulfillmentsync"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/scheduler"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/server"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
@@ -72,8 +73,9 @@ func NewServer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config,
 		BaseURL:   cfg.BaseURL,
 	})
 	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
+	wIntake := intake.New(rdb, producer)
 	processOrderUC := orderUC.NewProcessWebhook(pgAdapter.NewOrderRepository(db))
-	return server.New(processOrderUC, shopeeClient, rdb, tokens, producer, server.Config{
+	return server.New(processOrderUC, shopeeClient, rdb, tokens, wIntake, server.Config{
 		PartnerID:     cfg.PartnerID,
 		AppSecret:     cfg.AppSecret,
 		WebhookVerify: cfg.WebhookVerify,
@@ -214,7 +216,8 @@ func NewScheduler(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Conf
 	if err := scanRepo.EnsureSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("ensure safety_net_scan_results schema: %w", err)
 	}
-	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, cursorRepo, producer, rdb)
+	wIntake := intake.New(rdb, producer)
+	pollJob := scheduler.NewOrderPollJob(shopeeClient, tokens, tokenRepo, cursorRepo, wIntake, rdb)
 	scanJob := scheduler.NewSafetyNetScanJob(shopeeClient, tokens, tokenRepo, scanRepo, producer, rdb)
 	return scheduler.New(pollJob, cfg.PollSpec, scanJob, cfg.ScanSpec), nil
 }
