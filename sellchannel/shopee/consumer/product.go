@@ -15,7 +15,7 @@ import (
 
 const (
 	productConsumerGroup = "shopee-product-consumer"
-	productPublishTopic  = "shopee.product.publish"
+	productPublishTopic  = "product.ingest.shopee.v1.dev"
 )
 
 type ProductConsumer struct {

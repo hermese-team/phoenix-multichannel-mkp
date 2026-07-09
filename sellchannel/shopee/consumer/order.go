@@ -17,15 +17,16 @@ import (
 
 const (
 	orderConsumerGroup = "shopee-order-enricher"
-	orderIngestTopic   = "order.ingest.shopee.v1"
-	orderEnrichedTopic = "order.enriched.v1"
-	orderDLQTopic      = "order.enriched.shopee.dlq.v1"
+	orderIngestTopic   = "order.ingest.shopee.v1.dev"
+	orderEnrichedTopic = "order.enriched.v1.dev"
+	orderDLQTopic      = "order.dlq.v1.dev"
 
 	maxBatchSize   = 50              // Shopee API limit per GetOrderDetail call
 	coalesceWindow = 2 * time.Second // buffer window: merge duplicate order_sn pushes
-	maxRetries     = 3
-	apiRatePerSec  = 5.0 // conservative Shopee API rate limit (calls/sec)
+	apiRatePerSec  = 5.0             // conservative Shopee API rate limit (calls/sec)
 )
+
+// orderRetryTopic and maxRetryAttempts are defined in retry.go (same package).
 
 // orderIngestEvent mirrors classifier.IngestEvent — defined here to avoid circular imports.
 type orderIngestEvent struct {
@@ -38,7 +39,7 @@ type orderIngestEvent struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-// EnrichedEvent is published to order.enriched.v1.
+// EnrichedEvent is published to order.enriched.v1.dev.
 type EnrichedEvent struct {
 	Channel    string             `json:"channel"`
 	EventType  string             `json:"event_type"`
@@ -48,7 +49,7 @@ type EnrichedEvent struct {
 	EnrichedAt string             `json:"enriched_at"`
 }
 
-// DLQEvent is published to order.enriched.shopee.dlq after maxRetries failures.
+// DLQEvent is published to order.dlq after MaxRetryAttempts failures (via RetryConsumer).
 type DLQEvent struct {
 	Channel   string `json:"channel"`
 	EventType string `json:"event_type"`
@@ -59,9 +60,9 @@ type DLQEvent struct {
 	FailedAt  string `json:"failed_at"`
 }
 
-// OrderConsumer reads order.ingest.shopee.v1, coalesces notifications within a
+// OrderConsumer reads order.ingest.shopee.v1.dev, coalesces notifications within a
 // time window, bulk-fetches order detail from Shopee API, and publishes to
-// order.enriched.v1. Permanent failures go to the DLQ topic.
+// order.enriched.v1.dev. Permanent failures go to the DLQ topic.
 type OrderConsumer struct {
 	cfg             kafkaAdapter.Config
 	shopeeClient    *client.Client
@@ -235,38 +236,19 @@ func (c *OrderConsumer) fetchAndPublish(ctx context.Context, shopID int64, acces
 	case <-c.rateTicker.C:
 	}
 
-	var orders []client.OrderDetail
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		orders, lastErr = c.shopeeClient.GetOrderDetail(ctx, shopID, accessToken, sns)
-		if lastErr == nil {
-			break
-		}
-		logger.WarnContext(ctx, "get order detail failed, retrying",
-			"event", "consumer.get_order_detail.retry",
-			"shop_id", shopID,
-			"attempt", attempt,
-			"max_retries", maxRetries,
-			"error", lastErr,
-		)
-		if attempt < maxRetries {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(attempt) * time.Second):
-			}
-		}
-	}
-
-	if lastErr != nil {
-		logger.ErrorContext(ctx, "get order detail failed after retries, sending to DLQ",
-			"event", "consumer.get_order_detail.dlq",
+	// Single attempt — on failure publish to order.retry.v1.dev for backoff retry.
+	// RetryConsumer handles up to maxRetryAttempts (5) with exponential backoff,
+	// then routes to order.dlq.v1.dev on exhaustion.
+	orders, err := c.shopeeClient.GetOrderDetail(ctx, shopID, accessToken, sns)
+	if err != nil {
+		logger.WarnContext(ctx, "get order detail failed, scheduling retry",
+			"event", "consumer.get_order_detail.retry_scheduled",
 			"shop_id", shopID,
 			"order_sns", sns,
-			"error", lastErr,
+			"error", err,
 		)
 		for _, e := range chunk {
-			c.publishDLQ(ctx, e, lastErr, maxRetries)
+			c.publishRetry(ctx, e, err, 1)
 		}
 		return
 	}
@@ -281,7 +263,8 @@ func (c *OrderConsumer) fetchAndPublish(ctx context.Context, shopID int64, acces
 	for _, e := range chunk {
 		order, ok := orderMap[e.OrderSN]
 		if !ok {
-			c.publishDLQ(ctx, e, fmt.Errorf("order not found in GetOrderDetail response"), maxRetries)
+			// Order missing from response — schedule retry; Shopee may lag briefly.
+			c.publishRetry(ctx, e, fmt.Errorf("order not found in GetOrderDetail response"), 1)
 			continue
 		}
 		c.publishEnriched(ctx, e, order)
@@ -334,6 +317,43 @@ func (c *OrderConsumer) publishEnriched(ctx context.Context, e orderIngestEvent,
 			)
 		}
 	}
+}
+
+// publishRetry sends a RetryEvent to order.retry.v1.dev.
+// attempt is the attempt number that just failed (1-based); RetryConsumer
+// will wait backoffFor(attempt+1) before trying again.
+func (c *OrderConsumer) publishRetry(ctx context.Context, e orderIngestEvent, cause error, attempt int) {
+	delay := backoffFor(attempt + 1)
+	evt := RetryEvent{
+		Channel:       "shopee",
+		EventType:     e.EventType,
+		ShopID:        e.ShopID,
+		OrderSN:       e.OrderSN,
+		Attempt:       attempt,
+		MaxAttempts:   maxRetryAttempts,
+		NextAttemptAt: time.Now().Add(delay),
+		LastError:     cause.Error(),
+		Original:      e,
+	}
+	msgBytes, _ := json.Marshal(evt)
+	if err := c.producer.Publish(ctx, orderRetryTopic, []byte(e.OrderSN), msgBytes); err != nil {
+		logger.ErrorContext(ctx, "publish retry event failed",
+			"event", "consumer.retry.publish_error",
+			"order_sn", e.OrderSN,
+			"error", err,
+		)
+		return
+	}
+	logger.WarnContext(ctx, "order scheduled for retry",
+		"event", "consumer.retry.scheduled",
+		"order_sn", e.OrderSN,
+		"shop_id", e.ShopID,
+		"attempt", attempt,
+		"max_attempts", maxRetryAttempts,
+		"next_attempt_at", evt.NextAttemptAt.Format(time.RFC3339),
+		"delay_s", int(delay.Seconds()),
+		"cause", cause.Error(),
+	)
 }
 
 func (c *OrderConsumer) publishDLQ(ctx context.Context, e orderIngestEvent, cause error, attempts int) {

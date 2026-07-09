@@ -51,12 +51,12 @@ Shopee Platform
 │  intake.Accept()  (W — Webhook Intake component)    │
 │  ├── Redis SetNX  shopee:[webhook|poll]:dedup:...   │
 │  ├── Redis SADD   safety-net:shopee:processed       │
-│  └── Kafka Publish → order.raw.accepted.v1          │
+│  └── Kafka Publish → raw.accepted.shopee.v1.dev     │
 └─────────────────────┬───────────────────────────────┘
                       │
-             ┌────────▼────────────┐
-             │  order.raw.accepted.v1  │
-             └────────┬────────────┘
+        ┌─────────────▼──────────────────┐
+        │  raw.accepted.shopee.v1.dev    │
+        └─────────────┬──────────────────┘
                       │
        ┌──────────────▼──────────────────────────────────┐
        │  Classifier Consumer  (cmd/consumer)             │
@@ -64,33 +64,41 @@ Shopee Platform
        │  ORDER_CREATED / ORDER_READY_TO_SHIP / ...       │
        └──────────────┬──────────────────────────────────┘
                       │
-             ┌────────▼──────────────┐
-             │  order.ingest.shopee.v1  │
-             └────────┬──────────────┘
+        ┌─────────────▼────────────────────┐
+        │  order.ingest.shopee.v1.dev      │
+        └─────────────┬────────────────────┘
                       │
        ┌──────────────▼──────────────────────────────────┐
        │  Order Consumer  (cmd/consumer)                  │
        │  ├── Coalesce 2s window (deduplicate bursts)     │
        │  ├── Bulk GetOrderDetail (Shopee API, ≤50/call)  │
        │  ├── Enqueue fulfillment (READY_TO_SHIP)         │
-       │  └── Publish → order.enriched.v1                 │
-       │  (failures → order.enriched.shopee.dlq.v1)       │
+       │  └── Publish → order.enriched.v1.dev             │
+       │  (failures → order.dlq.v1.dev)                   │
        └──────────────┬──────────────────────────────────┘
                       │
-             ┌────────▼──────────┐
-             │  order.enriched.v1  │
-             └────────┬──────────┘
+        ┌─────────────▼──────────────────┐
+        │  order.enriched.v1.dev         │
+        └─────────────┬──────────────────┘
                       │
        ┌──────────────▼──────────────────────────────────┐
        │  Ingestion Consumer  (cmd/consumer)              │
+       │  ├── Normalize + PostgreSQL idempotency check    │
        │  ├── Upsert → orders (monthly partitioned)       │
-       │  └── Publish → order.lifecycle.v1                │
-       └─────────────────────────────────────────────────┘
+       │  └── Publish → order.received.v1.dev             │
+       └──────────────┬──────────────────────────────────┘
+                      │
+        ┌─────────────▼──────────────────┐
+        │  order.received.v1.dev         │  ← downstream
+        └────────────────────────────────┘
+
+ order.lifecycle.v1.dev  ← history/audit-log topic (published by separate consumer)
+ order.retry.v1.dev      ← retry topic
 
  Safety-Net Scan (cmd/scheduler — 2,17,32,47 * * * *):
       ├── GetOrderList per shop (last 30m)
       ├── SMISMEMBER safety-net:shopee:processed
-      ├── Re-inject missed orders → order.raw.accepted.v1
+      ├── Re-inject missed orders → raw.accepted.shopee.v1.dev
       └── Publish governance event → safety-net.scan.complete.v1
 
  Fulfillment Scheduler (cmd/fulfillment-scheduler — @every 5m):

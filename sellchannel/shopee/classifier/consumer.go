@@ -14,11 +14,11 @@ import (
 
 const (
 	classifierGroup = "shopee-classifier"
-	inputTopic      = "order.raw.accepted.v1"
-	OutputTopic     = "order.ingest.shopee.v1"
+	inputTopic      = "raw.accepted.shopee.v1.dev"
+	OutputTopic     = "order.ingest.shopee.v1.dev"
 )
 
-// IngestEvent is published to order.ingest.shopee.v1.
+// IngestEvent is published to order.ingest.shopee.v1.dev.
 // It carries a canonical EventType so downstream consumers are decoupled from Shopee push codes.
 type IngestEvent struct {
 	Channel   string `json:"channel"`
@@ -31,7 +31,7 @@ type IngestEvent struct {
 }
 
 // Consumer reads shopee.order.raw, classifies each event, and publishes
-// a canonical IngestEvent to order.ingest.shopee.v1.
+// a canonical IngestEvent to order.ingest.shopee.v1.dev.
 type Consumer struct {
 	cfg      kafkaAdapter.Config
 	producer *kafkaAdapter.Producer

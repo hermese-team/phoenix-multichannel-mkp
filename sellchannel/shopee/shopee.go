@@ -99,8 +99,8 @@ func NewConsumer(cfg Config, pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Confi
 }
 
 // NewIngestionConsumer wires the order ingestion consumer.
-// It reads order.enriched.v1, upserts to the orders table (idempotent ON CONFLICT),
-// and publishes order.received.v1 for downstream consumers.
+// It reads order.enriched.v1.dev, upserts to the orders table (idempotent ON CONFLICT),
+// and publishes order.received.v1.dev for downstream consumers.
 func NewIngestionConsumer(pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.IngestionConsumer, error) {
 	db, err := pgAdapter.New(pgCfg)
 	if err != nil {
@@ -117,9 +117,47 @@ func NewIngestionConsumer(pgCfg pgAdapter.Config, kafkaCfg kafkaAdapter.Config) 
 	return consumer.NewIngestionConsumer(kafkaCfg, orderRepo, producer), nil
 }
 
+// NewRetryConsumer wires the order retry consumer.
+// It reads order.retry.v1.dev, applies exponential backoff, re-attempts
+// GetOrderDetail, and routes to order.enriched.v1.dev or order.dlq.v1.dev.
+func NewRetryConsumer(cfg Config, pgCfg pgAdapter.Config, redisCfg redisAdapter.Config, kafkaCfg kafkaAdapter.Config) (*consumer.RetryConsumer, error) {
+	db, err := pgAdapter.New(pgCfg)
+	if err != nil {
+		return nil, err
+	}
+	rdb, err := redisAdapter.New(redisCfg)
+	if err != nil {
+		return nil, err
+	}
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, err
+	}
+	tokenRepo := pgAdapter.NewShopeeTokenRepository(db)
+	shopeeClient := client.New(client.Config{
+		PartnerID: cfg.PartnerID,
+		AppKey:    cfg.AppKey,
+		AppSecret: cfg.AppSecret,
+		BaseURL:   cfg.BaseURL,
+	})
+	tokens := newTokenStore(tokenRepo, rdb, shopeeClient)
+	return consumer.NewRetryConsumer(kafkaCfg, shopeeClient, tokens, producer), nil
+}
+
+// NewLifecycleConsumer wires the order lifecycle consumer.
+// It reads order.received.v1.dev and publishes an append-only LifecycleEvent
+// to order.lifecycle.v1.dev for every successful ingestion (history/audit-log).
+func NewLifecycleConsumer(kafkaCfg kafkaAdapter.Config) (*consumer.LifecycleConsumer, error) {
+	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle producer: %w", err)
+	}
+	return consumer.NewLifecycleConsumer(kafkaCfg, producer), nil
+}
+
 // NewClassifierConsumer wires the event classifier.
-// It reads shopee.order.raw, maps Shopee push codes to canonical EventTypes,
-// and publishes IngestEvents to order.ingest.shopee.v1.
+// It reads raw.accepted.shopee.v1.dev, maps Shopee push codes to canonical EventTypes,
+// and publishes IngestEvents to order.ingest.shopee.v1.dev.
 func NewClassifierConsumer(kafkaCfg kafkaAdapter.Config) (*classifier.Consumer, error) {
 	producer, err := kafkaAdapter.NewProducer(kafkaCfg)
 	if err != nil {

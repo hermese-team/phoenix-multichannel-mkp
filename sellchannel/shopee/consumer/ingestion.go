@@ -15,14 +15,17 @@ import (
 
 const (
 	ingestionConsumerGroup = "shopee-order-ingestion"
-	enrichedInputTopic     = "order.enriched.v1"
-	receivedTopic          = "order.lifecycle.v1"
+	enrichedInputTopic     = "order.enriched.v1.dev"
+	// receivedTopic is published after normalize + PostgreSQL idempotency check (upsert).
+	// order.lifecycle.v1.dev is a separate history/audit-log topic and is NOT published here.
+	receivedTopic = "order.received.v1.dev"
 
 	ingestionBatchSize = 100
 	ingestionWindow    = 500 * time.Millisecond
 )
 
-// ReceivedEvent is published to order.received.v1 after successful ingestion.
+// ReceivedEvent is published to order.received.v1.dev after successful
+// normalize + idempotency check (PostgreSQL upsert).
 type ReceivedEvent struct {
 	Channel    string `json:"channel"`
 	EventType  string `json:"event_type"`
@@ -34,9 +37,9 @@ type ReceivedEvent struct {
 	ReceivedAt string `json:"received_at"`
 }
 
-// IngestionConsumer reads order.enriched.v1, micro-batches the events,
-// upserts them into the orders table (idempotent), and publishes
-// order.received.v1 for each successful write.
+// IngestionConsumer reads order.enriched.v1.dev, micro-batches the events,
+// normalizes and upserts into the orders table (PostgreSQL idempotency check),
+// and publishes order.received.v1.dev for each successful write.
 type IngestionConsumer struct {
 	cfg       kafkaAdapter.Config
 	orderRepo *pgAdapter.OrderRepository
@@ -184,7 +187,7 @@ func (c *IngestionConsumer) ingestBatch(ctx context.Context, batch []EnrichedEve
 		}
 		msgBytes, _ := json.Marshal(received)
 		if err := c.producer.Publish(ctx, receivedTopic, []byte(event.OrderSN), msgBytes); err != nil {
-			logger.ErrorContext(ctx, "publish order.received.v1 failed",
+			logger.ErrorContext(ctx, "publish order.received.v1.dev failed",
 				"event", "ingestion.received.publish_error",
 				"order_sn", event.OrderSN,
 				"error", err,
@@ -192,7 +195,7 @@ func (c *IngestionConsumer) ingestBatch(ctx context.Context, batch []EnrichedEve
 			continue
 		}
 
-		logger.InfoContext(ctx, "order.received.v1 published",
+		logger.InfoContext(ctx, "order.received.v1.dev published",
 			"event", "ingestion.received.published",
 			"order_sn", event.OrderSN,
 			"shop_id", event.ShopID,

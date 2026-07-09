@@ -39,9 +39,19 @@ func main() {
 		log.Fatalf("init shopee order consumer: %v", err)
 	}
 
+	retryConsumer, err := shopee.NewRetryConsumer(cfg.Shopee, cfg.Postgres, cfg.Redis, cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee retry consumer: %v", err)
+	}
+
 	ingestionConsumer, err := shopee.NewIngestionConsumer(cfg.Postgres, cfg.Kafka)
 	if err != nil {
 		log.Fatalf("init shopee ingestion consumer: %v", err)
+	}
+
+	lifecycleConsumer, err := shopee.NewLifecycleConsumer(cfg.Kafka)
+	if err != nil {
+		log.Fatalf("init shopee lifecycle consumer: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -53,7 +63,9 @@ func main() {
 	g.Go(func() error { return productConsumer.Start(ctx) })
 	g.Go(func() error { return classifierConsumer.Start(ctx) })
 	g.Go(func() error { return orderConsumer.Start(ctx) })
+	g.Go(func() error { return retryConsumer.Start(ctx) })
 	g.Go(func() error { return ingestionConsumer.Start(ctx) })
+	g.Go(func() error { return lifecycleConsumer.Start(ctx) })
 
 	log.Println("starting shopee consumers")
 	if err := g.Wait(); err != nil {

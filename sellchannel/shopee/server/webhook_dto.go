@@ -22,7 +22,7 @@ type ProductWebhookRequest struct {
 	} `json:"data"`
 }
 
-// OrderRawEvent is published to order.raw.accepted.v1 immediately after a webhook push.
+// OrderRawEvent is published to raw.accepted.shopee.v1.dev immediately after a webhook push.
 // The consumer will enrich it by calling GetOrderDetail.
 type OrderRawEvent struct {
 	ShopID    int64  `json:"shop_id"`

@@ -21,7 +21,7 @@ import (
 
 const (
 	// OrderRawTopic is the durable quorum topic all raw order events land on.
-	OrderRawTopic = "order.raw.accepted.v1"
+	OrderRawTopic = "raw.accepted.shopee.v1.dev"
 
 	// SafetyNetKey is the Redis Set that records every order_sn produced to
 	// OrderRawTopic within SafetyNetTTL. The poll fallback uses SMISMEMBER
