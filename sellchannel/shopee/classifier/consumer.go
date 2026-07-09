@@ -9,6 +9,7 @@ import (
 
 	kafkaAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/kafka"
 	"github.com/okdev/marketplace-sync/pkg/logger"
+	"github.com/okdev/marketplace-sync/sellchannel/shopee/intake"
 )
 
 const (
@@ -16,15 +17,6 @@ const (
 	inputTopic      = "order.raw.accepted.v1"
 	OutputTopic     = "order.ingest.shopee.v1"
 )
-
-// rawEvent mirrors server.OrderRawEvent — separate to avoid circular imports.
-type rawEvent struct {
-	ShopID    int64  `json:"shop_id"`
-	OrderSN   string `json:"order_sn"`
-	Status    string `json:"status"`
-	Code      int    `json:"code"`
-	Timestamp int64  `json:"timestamp"`
-}
 
 // IngestEvent is published to order.ingest.shopee.v1.
 // It carries a canonical EventType so downstream consumers are decoupled from Shopee push codes.
@@ -96,7 +88,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 }
 
 func (c *Consumer) classify(ctx context.Context, data []byte) {
-	var raw rawEvent
+	var raw intake.RawEvent
 	if err := json.Unmarshal(data, &raw); err != nil {
 		logger.ErrorContext(ctx, "classifier unmarshal failed",
 			"event", "classifier.unmarshal.error",
@@ -105,7 +97,7 @@ func (c *Consumer) classify(ctx context.Context, data []byte) {
 		return
 	}
 
-	eventType := Classify(raw.Code, raw.Status)
+	eventType := Classify(raw.PushCode, raw.Status)
 
 	out := IngestEvent{
 		Channel:   "shopee",
@@ -113,7 +105,7 @@ func (c *Consumer) classify(ctx context.Context, data []byte) {
 		ShopID:    raw.ShopID,
 		OrderSN:   raw.OrderSN,
 		Status:    raw.Status,
-		Code:      raw.Code,
+		Code:      raw.PushCode,
 		Timestamp: raw.Timestamp,
 	}
 	msgBytes, _ := json.Marshal(out)
@@ -132,7 +124,7 @@ func (c *Consumer) classify(ctx context.Context, data []byte) {
 		"event", "classifier.classified",
 		"order_sn", raw.OrderSN,
 		"shop_id", raw.ShopID,
-		"code", raw.Code,
+		"code", raw.PushCode,
 		"status", raw.Status,
 		"event_type", eventType,
 		"output_topic", OutputTopic,

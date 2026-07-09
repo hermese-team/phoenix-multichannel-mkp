@@ -23,7 +23,7 @@ func (c *Client) GetOrderList(ctx context.Context, shopID int64, accessToken str
 		sign := signer.ShopeeSign(c.cfg.PartnerID, c.cfg.AppSecret, path, ts, accessToken, shopID)
 
 		url := fmt.Sprintf(
-			"%s?partner_id=%d&timestamp=%d&sign=%s&shop_id=%d&access_token=%s&time_range_field=update_time&time_from=%d&time_to=%d&page_size=%d",
+			"%s?partner_id=%d&timestamp=%d&sign=%s&shop_id=%d&access_token=%s&time_range_field=update_time&time_from=%d&time_to=%d&page_size=%d&response_optional_fields=order_status",
 			path, c.cfg.PartnerID, ts, sign, shopID, accessToken, timeFrom, timeTo, pageSize,
 		)
 		if cursor != "" {
