@@ -274,6 +274,20 @@ func (j *OrderPollJob) pollShop(ctx context.Context, shopID int64) {
 			)
 			continue
 		}
+
+		// Mirror webhook handler: SADD to safety-net after successful publish so
+		// the safety-net scan's SMISMEMBER sees poll-discovered orders too.
+		// Without this, the scan treats poll orders as "missed" and re-injects them.
+		if j.rdb != nil {
+			if err := j.rdb.SAddWithTTL(ctx, safetyNetKey, safetyNetTTL, o.OrderSN); err != nil {
+				logger.WarnContext(ctx, "poll safety-net sadd failed",
+					"event", "order_poll.safety_net.sadd_error",
+					"order_sn", o.OrderSN,
+					"error", err,
+				)
+			}
+		}
+
 		published++
 	}
 
