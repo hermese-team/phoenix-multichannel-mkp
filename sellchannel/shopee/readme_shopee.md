@@ -13,6 +13,8 @@
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Order Flow](#order-flow)
+- [Safety-Net Scan](#safety-net-scan)
+- [Classifier](#classifier)
 - [API Reference](#api-reference)
   - [GET /oauth/authorize](#get-oauthauthorize)
   - [GET /oauth/callback](#get-oauthcallback)
@@ -32,66 +34,81 @@
 ```
 Shopee Platform
       │
-      │  Signed order webhook (POST /webhook)
-      ▼
+      │  Signed order webhook (POST /webhook)      Fallback: Order Poll (*/5 * * * *)
+      ▼                                                         │
+┌─────────────────────────────────────────────────────┐        │
+│  HTTP Server  (cmd/server, port 8085)               │        │
+│  ┌──────────────────────────────────────────────┐   │        │
+│  │  shopeeWebhookAuth middleware                │   │        │
+│  │  HMAC-SHA256(appSecret, partnerID+path+body) │   │        │
+│  └──────────────────────────────────────────────┘   │        │
+└─────────────────────┬───────────────────────────────┘        │
+                      │                                         │
+             ┌────────▼─────────────────────────────────────────┘
+             │
+             ▼
 ┌─────────────────────────────────────────────────────┐
-│  HTTP Server  (cmd/server, port 8085)               │
-│  ┌──────────────────────────────────────────────┐   │
-│  │  shopeeWebhookAuth middleware                │   │
-│  │  HMAC-SHA256(appSecret, partnerID+path+body) │   │
-│  └──────────────────────────────────────────────┘   │
-│                │                                    │
-│         Verify signature                            │
-│         Token check (Redis → Postgres)              │
-│         Redis dedup SetNX                           │
-│                │                                    │
-│         Publish → shopee.order.raw                 │
-└─────────────────────────────────────────────────────┘
-                 │
-    ┌────────────▼──────────┐     ┌──────────────────────┐
-    │  Kafka Broker         │     │  Redis               │
-    │  shopee.order.raw     │     │  - dedup cache       │
-    │  shopee.order.detail  │     │  - token cache       │
-    └────────────┬──────────┘     │  - poll seen cache   │
-                 │                └──────────────────────┘
-      ┌──────────▼──────────────────────────────┐
-      │  Order Consumer  (cmd/consumer)          │
-      │  ├── GetOrderDetail (Shopee API)         │
-      │  ├── Publish → shopee.order.detail       │
-      │  └── Enqueue fulfillment (READY_TO_SHIP) │
-      └──────────────────────────┬──────────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │  PostgreSQL             │
-                    │  shopee_tokens          │
-                    │  shopee_fulfillment     │
-                    └────────────┬────────────┘
-                                 │
-      ┌──────────────────────────▼──────────────────────┐
-      │  Fulfillment Scheduler  (cmd/fulfillment-scheduler) │
-      │  @every 5m                                      │
-      │  ├── ListPending from shopee_fulfillment        │
-      │  ├── GetShippingParameter (Shopee API)          │
-      │  ├── ShipOrder (Shopee API)                     │
-      │  ├── GetTrackingNumber (Shopee API)             │
-      │  └── MarkShipped in DB                          │
-      └─────────────────────────────────────────────────┘
+│  intake.Accept()  (W — Webhook Intake component)    │
+│  ├── Redis SetNX  shopee:[webhook|poll]:dedup:...   │
+│  ├── Redis SADD   safety-net:shopee:processed       │
+│  └── Kafka Publish → order.raw.accepted.v1          │
+└─────────────────────┬───────────────────────────────┘
+                      │
+             ┌────────▼────────────┐
+             │  order.raw.accepted.v1  │
+             └────────┬────────────┘
+                      │
+       ┌──────────────▼──────────────────────────────────┐
+       │  Classifier Consumer  (cmd/consumer)             │
+       │  Classify(pushCode, status) → canonical EventType│
+       │  ORDER_CREATED / ORDER_READY_TO_SHIP / ...       │
+       └──────────────┬──────────────────────────────────┘
+                      │
+             ┌────────▼──────────────┐
+             │  order.ingest.shopee.v1  │
+             └────────┬──────────────┘
+                      │
+       ┌──────────────▼──────────────────────────────────┐
+       │  Order Consumer  (cmd/consumer)                  │
+       │  ├── Coalesce 2s window (deduplicate bursts)     │
+       │  ├── Bulk GetOrderDetail (Shopee API, ≤50/call)  │
+       │  ├── Enqueue fulfillment (READY_TO_SHIP)         │
+       │  └── Publish → order.enriched.v1                 │
+       │  (failures → order.enriched.shopee.dlq.v1)       │
+       └──────────────┬──────────────────────────────────┘
+                      │
+             ┌────────▼──────────┐
+             │  order.enriched.v1  │
+             └────────┬──────────┘
+                      │
+       ┌──────────────▼──────────────────────────────────┐
+       │  Ingestion Consumer  (cmd/consumer)              │
+       │  ├── Upsert → orders (monthly partitioned)       │
+       │  └── Publish → order.lifecycle.v1                │
+       └─────────────────────────────────────────────────┘
 
- Fallback Polling (cmd/scheduler — @every 5m, window=10m):
-      ├── FindAllShopIDs from shopee_tokens
-      ├── GetOrderList (Shopee API) per shop
-      ├── Redis SetNX dedup (shopee:poll:seen:{order_sn})
-      └── Publish missed orders → shopee.order.raw
+ Safety-Net Scan (cmd/scheduler — 2,17,32,47 * * * *):
+      ├── GetOrderList per shop (last 30m)
+      ├── SMISMEMBER safety-net:shopee:processed
+      ├── Re-inject missed orders → order.raw.accepted.v1
+      └── Publish governance event → safety-net.scan.complete.v1
+
+ Fulfillment Scheduler (cmd/fulfillment-scheduler — @every 5m):
+      ├── ListPending from shopee_fulfillment
+      ├── GetShippingParameter / ShipOrder / GetTrackingNumber (Shopee API)
+      └── MarkShipped in DB
 ```
 
-**Idempotency Layers:**
+**Redis keys:**
 
-| Layer | Mechanism | Key | TTL |
+| Key | Type | TTL | Purpose |
 |---|---|---|---|
-| Webhook dedup | Redis SetNX | `shopee:webhook:dedup:{order_sn}:{timestamp}` | 24h |
-| Poll dedup | Redis SetNX | `shopee:poll:seen:{order_sn}` | 10m |
-| Token check | tokenstore.Get | `shopee:{shop_id}:access_token` | token lifetime |
-| Fulfillment queue | Postgres `ON CONFLICT DO NOTHING` | `(shop_id, order_sn)` | permanent |
+| `shopee:webhook:dedup:{order_sn}:{timestamp}` | String | 24h | Webhook dedup |
+| `shopee:poll:seen:{order_sn}` | String | 24h | Poll dedup |
+| `safety-net:shopee:processed` | Set | 30m | Safety-net membership |
+| `shopee:{shop_id}:access_token` | String | token lifetime | Token cache |
+| `shopee:poll:lease` | String | 4m | Distributed poll lock |
+| `shopee:scan:lease` | String | 14m | Distributed scan lock |
 
 ---
 
@@ -142,8 +159,8 @@ open http://localhost:8085/oauth/authorize
 
 # 5. Start all services (แต่ละ terminal)
 make run-server                    # HTTP server (port 8085)
-make run-consumer                  # Kafka consumer
-make run-scheduler                 # Order poll scheduler
+make run-consumer                  # Kafka consumers (classifier + enricher + ingestion)
+make run-scheduler                 # Order poll + safety-net scan
 make run-fulfillment-scheduler     # Fulfillment scheduler
 ```
 
@@ -176,8 +193,14 @@ SHOPEE_OAUTH_REDIRECT_URL=https://<your-ngrok>.ngrok-free.dev/oauth/callback
 SHOPEE_WEBHOOK_VERIFY=false        # true ใน production
 
 # Order Poll Scheduler
-SHOPEE_POLL_SPEC="@every 5m"
+# Poll runs at :00,:05,:10,...,:55 (fixed-minute boundaries)
+SHOPEE_POLL_SPEC="*/5 * * * *"
 SHOPEE_POLL_WINDOW=10m
+
+# Safety-Net Scan Scheduler
+# Scan runs at :02,:17,:32,:47 — always 2 min after a poll tick so
+# intake.Accept SADD has time to persist before SMISMEMBER cross-reference runs
+SHOPEE_SCAN_SPEC="2,17,32,47 * * * *"
 
 # Fulfillment Scheduler
 SHOPEE_FULFILLMENT_SPEC="@every 5m"
@@ -197,6 +220,8 @@ KAFKA_GROUP_ID=marketplace-sync
 | `SHOPEE_APP_SECRET` | — | ต้องเท่ากับ `APP_KEY` (Shopee ใช้ key เดียวกัน) |
 | `SHOPEE_BASE_URL` | `https://partner.shopeemobile.com` | ใช้ sandbox URL ตอน dev |
 | `SHOPEE_WEBHOOK_VERIFY` | `false` | ตั้งเป็น `true` ใน production เสมอ |
+| `SHOPEE_POLL_SPEC` | `*/5 * * * *` | fixed-minute เพื่อให้ scan stagger ได้แม่นยำ |
+| `SHOPEE_SCAN_SPEC` | `2,17,32,47 * * * *` | รัน 2 นาทีหลัง poll เสมอ |
 | `SHOPEE_POLL_WINDOW` | `10m` | ควรมากกว่า poll interval เพื่อ overlap |
 | `SHOPEE_FULFILLMENT_LIMIT` | `20` | max orders ต่อ scheduler run |
 
@@ -217,32 +242,44 @@ sellchannel/shopee/
 │
 ├── cmd/
 │   ├── server/                  # HTTP server binary (webhook + OAuth)
-│   ├── consumer/                # Kafka consumer binary (order enrichment)
-│   ├── scheduler/               # Order poll scheduler binary (fallback)
+│   ├── consumer/                # Kafka consumer binary (classifier + enricher + ingestion)
+│   ├── scheduler/               # Order poll + safety-net scan binary
 │   └── fulfillment-scheduler/   # Fulfillment scheduler binary (ship orders)
 │
 ├── client/                      # Shopee API client
 │   ├── auth.go                  # OAuth: AuthURL(), GetAccessToken(), RefreshToken()
-│   ├── order.go                 # GetOrderList(), GetOrderDetail()
+│   ├── order.go                 # GetOrderList() (incl. response_optional_fields=order_status)
+│   │                            # GetOrderDetail()
 │   └── fulfillment.go           # GetShippingParameter(), ShipOrder*(), GetTrackingNumber()
 │
-├── server/                      # Gin HTTP handlers
+├── intake/                      # W (Webhook Intake) component — A→W interface
+│   └── intake.go                # Intake.Accept(): dedup SetNX + safety-net SADD + Kafka publish
+│                                # RawEvent struct, OrderRawTopic, SafetyNetKey, DedupTTL constants
+│
+├── server/                      # Gin HTTP handlers (A — Channel Adapter)
 │   ├── router.go                # Server struct + route registration
-│   ├── webhook.go               # POST /webhook — dedup → token check → Kafka publish
+│   ├── webhook.go               # POST /webhook — auth → intake.Accept()
 │   ├── webhook_verify.go        # HMAC-SHA256 signature verification middleware
-│   ├── webhook_dto.go           # OrderWebhookRequest, OrderRawEvent structs
+│   ├── webhook_dto.go           # OrderWebhookRequest struct
 │   ├── oauth.go                 # GET /oauth/authorize, GET /oauth/callback
 │   ├── oauth_dto.go             # OAuthCallbackRequest struct
-│   ├── debug_order.go           # GET /debug/order (simulate webhook, non-production)
+│   ├── debug_order.go           # GET /debug/order — simulate push via intake.Accept()
 │   ├── health.go                # GET /health
 │   └── middleware.go            # Request logger
 │
+├── classifier/                  # Step 4: canonical event type mapping
+│   ├── consumer.go              # Classifier: order.raw.accepted.v1 → order.ingest.shopee.v1
+│   └── classifier.go            # Classify(pushCode int, status string) → EventType string
+│
 ├── consumer/
-│   ├── order.go                 # OrderConsumer: raw → GetOrderDetail → detail + fulfillment
+│   ├── order.go                 # OrderConsumer: ingest → GetOrderDetail → enriched + fulfillment
+│   ├── ingestion.go             # IngestionConsumer: enriched → orders DB upsert → lifecycle event
 │   └── product.go               # ProductConsumer (stub)
 │
 ├── scheduler/
-│   └── order_poll.go            # OrderPollJob: poll GetOrderList → publish missed orders
+│   ├── scheduler.go             # Scheduler: cron wrapper for poll + scan jobs
+│   ├── order_poll.go            # OrderPollJob: GetOrderList → SMISMEMBER → intake.Accept()
+│   └── safety_net_scan.go       # SafetyNetScanJob: audit pipeline, re-inject missed orders
 │
 ├── fulfillmentscheduler/
 │   └── scheduler.go             # FulfillmentScheduler: cron wrapper
@@ -253,7 +290,6 @@ sellchannel/shopee/
 ├── tokenstore/
 │   └── store.go                 # Token R/W: Postgres (source of truth) + Redis (cache)
 │
-├── config/                      # Shopee-specific config (embedded in shopee.Config)
 ├── config.go                    # shopee.Config struct
 └── shopee.go                    # Composition root — wires all dependencies
 ```
@@ -266,8 +302,10 @@ internal/
     ├── postgres/
     │   ├── shopee_token_repository.go       # shopee_tokens table
     │   ├── shopee_fulfillment_repository.go # shopee_fulfillment table
-    │   └── order_repository.go              # orders table (schema pending)
-    ├── redis/                   # Redis client + SetNX / GetString helpers
+    │   ├── shopee_poll_cursor_repository.go # shopee_poll_cursor table
+    │   ├── safety_net_scan_repository.go    # safety_net_scan_results table
+    │   └── order_repository.go              # orders table (monthly partitioned)
+    ├── redis/                   # Redis client + SetNX / SADD / SMIsMember helpers
     └── kafka/                   # Producer + Consumer wrappers (franz-go)
 ```
 
@@ -275,7 +313,7 @@ internal/
 
 ## Order Flow
 
-### 1. Webhook → Kafka
+### 1. Webhook → Intake → Kafka
 
 ```
 Shopee Platform
@@ -283,7 +321,6 @@ Shopee Platform
     │  Authorization: <HMAC-SHA256 hex>
     ▼
 shopeeWebhookAuth middleware
-    ├── read raw body (buffer for downstream)
     ├── SHOPEE_WEBHOOK_VERIFY=true  → verify HMAC-SHA256(appSecret, partnerID+path+body)
     └── SHOPEE_WEBHOOK_VERIFY=false → skip (sandbox/dev)
     │
@@ -292,66 +329,161 @@ handleOrderWebhook()
     ├── Bind JSON → OrderWebhookRequest
     ├── return 200 OK immediately  ← Shopee requires 2xx within timeout
     └── go func() {
-            ├── Redis SetNX shopee:webhook:dedup:{order_sn}:{timestamp} EX 24h
-            │     └── !isNew → duplicate, return
-            ├── tokenstore.Get(shopID)
-            │     └── err → shop not authorized, return (ไม่ publish ไป Kafka)
-            └── Kafka Publish → shopee.order.raw
-                  key   = order_sn
-                  value = { shop_id, order_sn, status, timestamp }
+            intake.Accept(ctx, "shopee:webhook:dedup:{sn}:{ts}", RawEvent{...})
+                ├── Redis SetNX shopee:webhook:dedup:{order_sn}:{timestamp} EX 24h
+                │     └── !isNew → duplicate → return
+                ├── Redis SADD safety-net:shopee:processed {order_sn} (TTL 30m)
+                └── Kafka Publish → order.raw.accepted.v1
+                      key   = order_sn
+                      value = { shop_id, order_sn, status, code, timestamp }
         }
 ```
 
-### 2. Order Consumer → Kafka
+### 2. Fallback Poll → Intake → Kafka (ถ้า webhook พลาด)
 
 ```
-shopee.order.raw
+OrderPollJob.Run()  (*/5 * * * *  window=30m)
+    ├── tokenRepo.FindAllShopIDs()
+    └── per shop:
+          ├── tokens.Get(shop_id)
+          ├── shopeeClient.GetOrderList(shop_id, token, now-30m, now)
+          │     (incl. response_optional_fields=order_status)
+          │
+          ├── Layer 1: SMISMEMBER safety-net:shopee:processed [all order_sn]
+          │     └── in set → already handled by webhook → skip
+          │
+          └── Layer 2: per remaining order:
+                intake.Accept(ctx, "shopee:poll:seen:{sn}", RawEvent{PushCode:0, Status:...})
+                    ├── Redis SetNX shopee:poll:seen:{order_sn} EX 24h → skip if seen
+                    ├── Redis SADD safety-net:shopee:processed {order_sn}
+                    └── Kafka Publish → order.raw.accepted.v1
+```
+
+**Cron stagger:** Poll (`*/5 * * * *`) runs at fixed-minute boundaries (:00, :05, …). Scan (`2,17,32,47 * * * *`) runs 2 minutes later, guaranteeing SADD is persisted before SMISMEMBER. Using `@every` for both would cause a race since both timers start at scheduler init time.
+
+### 3. Classifier → Kafka
+
+```
+order.raw.accepted.v1
     │
     ▼
-OrderConsumer.Start()
+Classifier Consumer  (group: shopee-classifier)
+    └── classify(raw)
+          ├── Classify(raw.PushCode, raw.Status) → canonical EventType
+          └── Kafka Publish → order.ingest.shopee.v1
+                { channel, event_type, shop_id, order_sn, status, code, timestamp }
+```
+
+### 4. Order Enricher → Kafka
+
+```
+order.ingest.shopee.v1
+    │
+    ▼
+OrderConsumer  (group: shopee-order-enricher)
     └── process(event)
-          ├── tokenstore.Get(shop_id)  → get access token
-          ├── shopeeClient.GetOrderDetail(shop_id, token, [order_sn])
-          ├── Kafka Publish → shopee.order.detail
-          │     key   = order_sn
-          │     value = full Shopee order object
-          └── order_status == "READY_TO_SHIP"
+          ├── Coalesce 2s window — merge duplicate order_sn pushes
+          ├── Bulk GetOrderDetail(shop_id, token, [order_sn, ...])  ← ≤50 per call, 5 RPS
+          ├── On success → Kafka Publish → order.enriched.v1
+          ├── On permanent failure (3 retries) → Kafka Publish → order.enriched.shopee.dlq.v1
+          └── event_type == ORDER_READY_TO_SHIP
                 └── fulfillmentRepo.Enqueue(shop_id, order_sn, "shopee_logistics", "")
                       INSERT INTO shopee_fulfillment ON CONFLICT DO NOTHING
 ```
 
-### 3. Fallback Poll → Kafka (ถ้า webhook พลาด)
+### 5. Ingestion Consumer → Database
 
 ```
-OrderPollJob.Run()  (@every 5m, window=10m)
-    ├── tokenRepo.FindAllShopIDs()
-    └── per shop:
-          ├── tokens.Get(shop_id)
-          ├── shopeeClient.GetOrderList(shop_id, token, now-10m, now)
-          └── per order:
-                ├── Redis SetNX shopee:poll:seen:{order_sn} EX 10m
-                │     └── !isNew → already published by webhook, skip
-                └── Kafka Publish → shopee.order.raw  ← same topic, same consumer
+order.enriched.v1
+    │
+    ▼
+IngestionConsumer  (group: shopee-order-ingestion)
+    └── upsert(enriched)
+          ├── orderRepo.Upsert(ctx, order)   ← find-or-create across partitions
+          └── Kafka Publish → order.lifecycle.v1
 ```
 
-### 4. Fulfillment Scheduler → Shopee API
+### 6. Fulfillment Scheduler → Shopee API
 
 ```
 FulfillmentScheduler  (@every 5m, limit=20)
     └── syncer.SyncPending(ctx, 20)
           ├── fulfillmentRepo.ListPending(limit=20)  ← WHERE sync_status='pending'
           └── per row:
-                ├── tokens.Get(shop_id)
-                │
                 ├── delivery_type = "shopee_logistics"
-                │     ├── GetShippingParameter(order_sn)  → pickup address + timeslots
+                │     ├── GetShippingParameter(order_sn)
                 │     ├── ShipOrderPickup(order_sn, address_id, pickup_time_id)
                 │     ├── GetTrackingNumber(order_sn)
                 │     └── fulfillmentRepo.MarkShipped(id, tracking_number)
-                │
                 └── delivery_type = "own_fleet"
                       ├── ShipOrderNonIntegrated(order_sn, tracking_number)
                       └── fulfillmentRepo.MarkShipped(id, tracking_number)
+```
+
+---
+
+## Safety-Net Scan
+
+`SafetyNetScanJob` รัน `2,17,32,47 * * * *` (2 นาทีหลัง poll ทุก tick) เพื่อตรวจว่า webhook pipeline พลาด order ไหนในช่วง 30 นาทีล่าสุด
+
+```
+SafetyNetScanJob.Run()
+    ├── Acquire distributed lease (Redis SetNX shopee:scan:lease EX 14m)
+    └── per shop:
+          ├── GetOrderList(shop_id, token, now-30m, now)
+          ├── SMISMEMBER safety-net:shopee:processed [all order_sn]
+          │     ├── in set  → matched → matchedCount++
+          │     └── not in set → missed → missedCount++
+          │           └── Publish → order.raw.accepted.v1  (re-inject)
+          ├── Kafka Publish → safety-net.scan.complete.v1
+          │     { channel, shop_id, window_from, window_to,
+          │       total, matched, missed, reinjected, duration_ms }
+          └── Persist → safety_net_scan_results table
+```
+
+**ตัวชี้วัดสุขภาพ:** `missed=0` ทุก scan = webhook pipeline ปกติ. `missed>0` = scan re-inject ให้แล้ว — order จะถูก process ผ่าน pipeline ปกติ.
+
+**Cron stagger design:**
+- Poll รันที่ `:00,:05,:10,...` → SADD `safety-net:shopee:processed`
+- Scan รันที่ `:02,:17,:32,:47` → SMISMEMBER อ่าน Redis หลัง poll เสร็จ
+- `@every 5m` + `@every 15m` จะ race: ทั้งคู่ start ที่ `scheduler init time` อาจรันพร้อมกัน
+
+---
+
+## Classifier
+
+`classifier.Consumer` อ่านจาก `order.raw.accepted.v1` และ map Shopee push code + order status ไปเป็น canonical `EventType` ก่อน publish ไป `order.ingest.shopee.v1`
+
+เหตุผล: downstream consumers ไม่ควรรู้จัก Shopee push code โดยตรง — ใช้ canonical type เพื่อ decouple
+
+**Canonical EventTypes:**
+
+| PushCode | Status | EventType |
+|---|---|---|
+| `3` | `UNPAID` | `ORDER_CREATED` |
+| `3` | `READY_TO_SHIP` | `ORDER_READY_TO_SHIP` |
+| `3` | `PROCESSED` | `ORDER_PROCESSED` |
+| `3` | `SHIPPED` | `ORDER_SHIPPED` |
+| `3` | `COMPLETED` | `ORDER_COMPLETED` |
+| `3` | `CANCELLED` | `ORDER_CANCELLED` |
+| `3` | `IN_CANCEL` | `ORDER_IN_CANCEL` |
+| `0` (poll) | any | same status-based mapping |
+| other | any | `ORDER_STATUS_UPDATED` (fallback) |
+
+**GetOrderList `order_status` field:** Shopee ต้องการ `response_optional_fields=order_status` เพื่อ return `OrderStatus` — ถ้าไม่ใส่ status จะเป็น `""` และ classifier จะได้ `ORDER_STATUS_UPDATED` เสมอ. `client.GetOrderList` ใส่ param นี้ให้แล้ว.
+
+**IngestEvent payload** (published to `order.ingest.shopee.v1`):
+
+```json
+{
+  "channel": "shopee",
+  "event_type": "ORDER_READY_TO_SHIP",
+  "shop_id": 225997847,
+  "order_sn": "26070985HRXASU",
+  "status": "READY_TO_SHIP",
+  "code": 3,
+  "timestamp": 1783421265
+}
 ```
 
 ---
@@ -397,7 +529,7 @@ GET /oauth/callback?code=<auth_code>&shop_id=<shop_id>
 
 ### POST /webhook
 
-รับ Shopee push notification — return 200 OK ทันที, process async
+รับ Shopee push notification — return 200 OK ทันที, process ผ่าน `intake.Accept()` async
 
 ```
 POST /webhook
@@ -434,7 +566,7 @@ Content-Type: application/json
 
 ### GET /debug/order
 
-Simulate webhook โดย fetch order จาก Shopee API แล้ว publish ไป Kafka (ใช้ได้เฉพาะ dev)
+Simulate webhook push โดย publish `RawEvent` ไป `order.raw.accepted.v1` ผ่าน `intake.Accept()` (ใช้ได้เฉพาะ dev)
 
 ```bash
 curl "http://localhost:8085/debug/order?shop_id=225997847&order_sn=2607073G09MYPG"
@@ -446,7 +578,7 @@ curl "http://localhost:8085/debug/order?shop_id=225997847&order_sn=2607073G09MYP
 {
   "shop_id": 225997847,
   "order_sn": "2607073G09MYPG",
-  "kafka_topic": "shopee.order.raw",
+  "kafka_topic": "order.raw.accepted.v1",
   "kafka_published": true,
   "message": "raw event published — consumer will fetch order detail from Shopee API"
 }
@@ -519,17 +651,92 @@ CREATE TABLE shopee_fulfillment (
 **ดู fulfillment queue:**
 
 ```sql
--- pending orders
 SELECT shop_id, order_sn, delivery_type, last_error, updated_at
-FROM shopee_fulfillment
-WHERE sync_status = 'pending'
-ORDER BY updated_at;
+FROM shopee_fulfillment WHERE sync_status = 'pending' ORDER BY updated_at;
+```
 
--- shipped orders
-SELECT shop_id, order_sn, tracking_number, updated_at
-FROM shopee_fulfillment
-WHERE sync_status = 'shipped'
-ORDER BY updated_at DESC;
+### `orders` (Monthly Partitioned)
+
+Order table — `PARTITION BY RANGE (created_at)`, ชื่อ partition `orders_YYYY_MM`
+
+```sql
+-- Global sequence (BIGSERIAL per-partition จะมี duplicate id ข้าม partition)
+CREATE SEQUENCE IF NOT EXISTS orders_id_seq;
+
+-- Partitioned parent
+CREATE TABLE IF NOT EXISTS orders (
+    id               BIGINT        NOT NULL DEFAULT nextval('orders_id_seq'),
+    shop_id          BIGINT        NOT NULL,
+    marketplace_id   TEXT          NOT NULL,   -- order_sn
+    marketplace_type TEXT          NOT NULL,   -- "shopee"
+    status           TEXT          NOT NULL,
+    total_amount     NUMERIC(18,2) NOT NULL DEFAULT 0,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, created_at),              -- partition key ต้องอยู่ใน PK
+    UNIQUE      (marketplace_id, marketplace_type, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- Cross-partition lookup index
+CREATE INDEX IF NOT EXISTS orders_marketplace_idx
+    ON orders (marketplace_id, marketplace_type);
+
+-- Default catch-all partition
+CREATE TABLE IF NOT EXISTS orders_default PARTITION OF orders DEFAULT;
+
+-- Monthly child partitions (EnsureSchema สร้าง current + 2 months ahead)
+CREATE TABLE IF NOT EXISTS orders_2026_07
+    PARTITION OF orders FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+```
+
+**Upsert strategy:** PostgreSQL ไม่รองรับ `ON CONFLICT` ข้าม partition → ใช้ find-or-create:
+1. `SELECT id, created_at WHERE marketplace_id=$1 AND marketplace_type=$2` (hits index)
+2. `ErrNoRows` → INSERT (row ลง partition เดือน `created_at` อัตโนมัติ)
+3. Found → `UPDATE ... WHERE id=$3 AND created_at=$4` (partition pruning)
+
+**Migration:** ถ้า `orders` เป็น heap table อยู่แล้ว `EnsureSchema()` rename เป็น `orders_legacy` ก่อน
+
+**Partition creation:** `EnsureSchema()` (startup) สร้าง current month + 2 months ahead. `EnsureMonthPartition()` สามารถเรียกจาก monthly cron เพื่อสร้าง partition ล่วงหน้า.
+
+```sql
+-- ดู partition structure
+\d+ orders
+
+-- ดู rows per partition
+SELECT tableoid::regclass AS partition, count(*)
+FROM orders GROUP BY 1 ORDER BY 1;
+```
+
+### `shopee_poll_cursor`
+
+Persistent cursor ของ poll job — ป้องกัน full-window scan ทุก restart
+
+```sql
+CREATE TABLE shopee_poll_cursor (
+    shop_id    BIGINT      PRIMARY KEY,
+    cursor_at  TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### `safety_net_scan_results`
+
+ประวัติ safety-net scan ต่อ run
+
+```sql
+CREATE TABLE safety_net_scan_results (
+    id               BIGSERIAL   PRIMARY KEY,
+    channel          TEXT        NOT NULL,
+    shop_id          BIGINT      NOT NULL,
+    window_from      TIMESTAMPTZ NOT NULL,
+    window_to        TIMESTAMPTZ NOT NULL,
+    total_count      INT         NOT NULL DEFAULT 0,
+    matched_count    INT         NOT NULL DEFAULT 0,
+    missed_count     INT         NOT NULL DEFAULT 0,
+    reinjected_count INT         NOT NULL DEFAULT 0,
+    duration_ms      BIGINT      NOT NULL DEFAULT 0,
+    scanned_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 ```
 
 **Schema สร้างอัตโนมัติตอน startup** ผ่าน `EnsureSchema()` — ไม่ต้องรัน migration มือ
@@ -540,18 +747,37 @@ ORDER BY updated_at DESC;
 
 | Topic | Key | Producer | Consumer | หมายเหตุ |
 |---|---|---|---|---|
-| `shopee.order.raw` | `order_sn` | webhook handler, order poll | OrderConsumer | lightweight event — แค่ shop_id + order_sn + status |
-| `shopee.order.detail` | `order_sn` | OrderConsumer | downstream (TBD) | full order detail จาก Shopee GetOrderDetail API |
+| `order.raw.accepted.v1` | `order_sn` | intake.Accept (webhook + poll + scan re-inject) | Classifier | lightweight RawEvent — shop_id + order_sn + status + push_code |
+| `order.ingest.shopee.v1` | `order_sn` | Classifier | OrderConsumer (enricher) | canonical IngestEvent with EventType |
+| `order.enriched.v1` | `order_sn` | OrderConsumer | IngestionConsumer | full order detail from GetOrderDetail |
+| `order.enriched.shopee.dlq.v1` | `order_sn` | OrderConsumer (on failure) | — | DLQ: permanent enrichment failures |
+| `order.lifecycle.v1` | `order_sn` | IngestionConsumer | downstream | DB upsert result event |
+| `safety-net.scan.complete.v1` | `shop_id` | SafetyNetScanJob | — | governance: scan run metrics per shop |
 
 **ดู messages ใน Redpanda Console:** `http://localhost:8081`
 
-**shopee.order.raw payload:**
+**order.raw.accepted.v1 payload:**
 
 ```json
 {
   "shop_id": 225997847,
-  "order_sn": "2607073G09MYPG",
+  "order_sn": "26070985HRXASU",
   "status": "READY_TO_SHIP",
+  "code": 3,
+  "timestamp": 1783421265
+}
+```
+
+**order.ingest.shopee.v1 payload:**
+
+```json
+{
+  "channel": "shopee",
+  "event_type": "ORDER_READY_TO_SHIP",
+  "shop_id": 225997847,
+  "order_sn": "26070985HRXASU",
+  "status": "READY_TO_SHIP",
+  "code": 3,
   "timestamp": 1783421265
 }
 ```
@@ -560,7 +786,7 @@ ORDER BY updated_at DESC;
 
 ## Idempotency Layers
 
-### Webhook dedup
+### Layer 1: Webhook dedup (via intake)
 
 ```
 Redis SetNX  shopee:webhook:dedup:{order_sn}:{timestamp}  EX 24h
@@ -568,15 +794,25 @@ Redis SetNX  shopee:webhook:dedup:{order_sn}:{timestamp}  EX 24h
 
 Shopee retry webhook ด้วย `timestamp` เดิมถ้าไม่ได้รับ 2xx → key เดิม → skip
 
-### Poll dedup
+### Layer 2: Poll dedup (via intake)
 
 ```
-Redis SetNX  shopee:poll:seen:{order_sn}  EX 10m
+Redis SetNX  shopee:poll:seen:{order_sn}  EX 24h
 ```
 
 ป้องกัน order จาก webhook path ถูก publish ซ้ำโดย poll fallback
 
-### Fulfillment dedup
+### Layer 3: Safety-net cross-reference
+
+```
+Redis SADD  safety-net:shopee:processed  {order_sn}  (Set TTL 30m)
+```
+
+- `intake.Accept()` ทำ SADD หลังทุก successful publish (ทั้ง webhook และ poll path)
+- `OrderPollJob` ทำ SMISMEMBER ก่อน intake เพื่อ skip webhook-handled orders เร็ว
+- `SafetyNetScanJob` ทำ SMISMEMBER เพื่อหา missed orders แล้ว re-inject
+
+### Layer 4: Fulfillment dedup
 
 ```sql
 INSERT INTO shopee_fulfillment (shop_id, order_sn, ...)
@@ -610,8 +846,8 @@ tokenstore.Get(ctx, shopID)
 ```bash
 # Run (Shopee)
 make run-server                     # HTTP server (port 8085)
-make run-consumer                   # Kafka order consumer
-make run-scheduler                  # Order poll scheduler (@every 5m)
+make run-consumer                   # Kafka consumers (classifier + enricher + ingestion)
+make run-scheduler                  # Order poll + safety-net scan scheduler
 make run-fulfillment-scheduler      # Fulfillment scheduler (@every 5m)
 
 # Build
@@ -644,7 +880,7 @@ UNPAID → READY_TO_SHIP → PROCESSED → SHIPPED → COMPLETED
 
 | Status | ความหมาย | Action ใน system |
 |---|---|---|
-| `UNPAID` | รอชำระ | รับ webhook, ไม่ enqueue fulfillment |
+| `UNPAID` | รอชำระ | รับ webhook → intake → classify → enrich (ไม่ enqueue fulfillment) |
 | `READY_TO_SHIP` | ชำระแล้ว รอ ship | OrderConsumer enqueue fulfillment |
 | `PROCESSED` | ship_order สำเร็จ | fulfillment MarkShipped |
 | `SHIPPED` | courier รับพัสดุแล้ว | — |
