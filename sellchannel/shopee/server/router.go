@@ -60,8 +60,8 @@ func (s *Server) routes() {
 	webhookAuth := shopeeWebhookAuth(s.partnerID, s.appSecret, s.webhookVerify)
 
 	// Single entry-point: Shopee sends all push codes to one callback URL.
-	// Dispatch by code happens inside the handler.
-	s.engine.POST("/webhook", webhookAuth, s.handleOrderWebhook)
+	// handleWebhook peeks at the push code and dispatches to the correct handler.
+	s.engine.POST("/webhook", webhookAuth, s.handleWebhook)
 
 	// Legacy aliases — kept for backward compatibility during migration.
 	webhook := s.engine.Group("/webhook", webhookAuth)

@@ -16,7 +16,7 @@ type debugFetchOrderRequest struct {
 
 // GET /debug/order?shop_id=225997847&order_sn=260629CC7NGG5Y
 // Simulates a webhook push: fetches the order from Shopee API to verify the token,
-// then publishes a raw event to shopee.order.raw for the consumer to enrich.
+// then publishes a raw event to order.raw.accepted.v1 for the consumer to enrich.
 func (s *Server) debugFetchOrder(c *gin.Context) {
 	var req debugFetchOrderRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -35,7 +35,7 @@ func (s *Server) debugFetchOrder(c *gin.Context) {
 		return
 	}
 
-	// 2. publish raw event to shopee.order.raw — consumer will fetch full detail
+	// 2. publish raw event to order.raw.accepted.v1 — consumer will fetch full detail
 	raw := OrderRawEvent{
 		ShopID:    req.ShopID,
 		OrderSN:   req.OrderSN,

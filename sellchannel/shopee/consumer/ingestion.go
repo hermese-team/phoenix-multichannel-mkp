@@ -16,7 +16,7 @@ import (
 const (
 	ingestionConsumerGroup = "shopee-order-ingestion"
 	enrichedInputTopic     = "order.enriched.v1"
-	receivedTopic          = "order.received.v1"
+	receivedTopic          = "order.lifecycle.v1"
 
 	ingestionBatchSize = 100
 	ingestionWindow    = 500 * time.Millisecond

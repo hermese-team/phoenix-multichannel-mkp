@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	orderRawTopic = "shopee.order.raw"
+	orderRawTopic = "order.raw.accepted.v1"
 
 	// safetyNetKey must match the key written by the webhook handler.
 	safetyNetKey = "safety-net:shopee:processed"

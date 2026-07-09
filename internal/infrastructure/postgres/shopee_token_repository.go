@@ -76,6 +76,15 @@ func (r *ShopeeTokenRepository) FindAllShopIDs(ctx context.Context) ([]int64, er
 	return ids, rows.Err()
 }
 
+// Delete removes the token record for a shop (called on shop_authorization_canceled_push).
+func (r *ShopeeTokenRepository) Delete(ctx context.Context, shopID int64) error {
+	const q = `DELETE FROM shopee_tokens WHERE shop_id = $1`
+	if _, err := r.db.ExecContext(ctx, q, shopID); err != nil {
+		return fmt.Errorf("delete shopee token: %w", err)
+	}
+	return nil
+}
+
 // FindByShopID returns the token record for a shop, or nil if not found.
 func (r *ShopeeTokenRepository) FindByShopID(ctx context.Context, shopID int64) (*ShopeeToken, error) {
 	const q = `

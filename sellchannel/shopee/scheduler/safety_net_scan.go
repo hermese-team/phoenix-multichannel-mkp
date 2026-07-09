@@ -18,7 +18,7 @@ const (
 	scanWindow   = 30 * time.Minute
 	scanLeaseTTL = 14 * time.Minute
 	scanLeaseKey = "shopee:scan:lease"
-	scanTopic    = "safety-net.scan.complete"
+	scanTopic    = "safety-net.scan.complete.v1"
 )
 
 // scanCompleteEvent is the governance event published after each scan run.

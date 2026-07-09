@@ -13,7 +13,7 @@ import (
 
 const (
 	classifierGroup = "shopee-classifier"
-	inputTopic      = "shopee.order.raw"
+	inputTopic      = "order.raw.accepted.v1"
 	OutputTopic     = "order.ingest.shopee.v1"
 )
 

@@ -56,6 +56,20 @@ func (s *Store) Set(ctx context.Context, shopID int64, access, refresh string, e
 	return nil
 }
 
+// Revoke removes all stored tokens for a shop.
+// Called when Shopee sends shop_authorization_canceled_push (code 2).
+// Redis keys are evicted first (best-effort), then the Postgres row is deleted.
+func (s *Store) Revoke(ctx context.Context, shopID int64) error {
+	// Evict Redis fast-path cache (non-fatal).
+	_ = s.rdb.Delete(ctx, fmt.Sprintf(keyAccessFmt, shopID))
+	_ = s.rdb.Delete(ctx, fmt.Sprintf(keyRefreshFmt, shopID))
+
+	if err := s.repo.Delete(ctx, shopID); err != nil {
+		return fmt.Errorf("revoke token: %w", err)
+	}
+	return nil
+}
+
 // Get returns the access and refresh tokens for a shop.
 // It checks Redis first; on miss it falls back to Postgres and re-warms Redis.
 // If the token is expired or expiring within 30 min, it auto-refreshes using the refresh token.

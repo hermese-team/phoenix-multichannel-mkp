@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -11,8 +13,47 @@ import (
 	"github.com/okdev/marketplace-sync/pkg/logger"
 )
 
+// Shopee push codes dispatched at /webhook.
 const (
-	orderRawTopic  = "shopee.order.raw"
+	pushCodeShopAuthCanceled = 2
+	pushCodeOrderStatus      = 3
+)
+
+// baseWebhookRequest contains the fields common to every Shopee push notification.
+// Used by handleWebhook to dispatch to the correct handler before the body is consumed.
+type baseWebhookRequest struct {
+	Code   int   `json:"code"`
+	ShopID int64 `json:"shop_id"`
+}
+
+// handleWebhook is the single entry-point for all Shopee push notifications.
+// It peeks at the push code and dispatches to the appropriate handler.
+func (s *Server) handleWebhook(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+	// Restore the body so downstream handlers can ShouldBindJSON normally.
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+	var base baseWebhookRequest
+	if err := json.Unmarshal(body, &base); err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+
+	switch base.Code {
+	case pushCodeShopAuthCanceled:
+		s.handleShopAuthCanceled(c, base.ShopID)
+	default:
+		// Codes 3+ (order status, product, etc.) go to the order webhook handler.
+		s.handleOrderWebhook(c)
+	}
+}
+
+const (
+	orderRawTopic  = "order.raw.accepted.v1"
 	dedupKeyTTL    = 24 * time.Hour
 	safetyNetKey   = "safety-net:shopee:processed"
 	safetyNetTTL   = 30 * time.Minute // matches poll fallback scan window

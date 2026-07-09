@@ -19,7 +19,7 @@ const (
 	orderConsumerGroup = "shopee-order-enricher"
 	orderIngestTopic   = "order.ingest.shopee.v1"
 	orderEnrichedTopic = "order.enriched.v1"
-	orderDLQTopic      = "order.enriched.shopee.dlq"
+	orderDLQTopic      = "order.enriched.shopee.dlq.v1"
 
 	maxBatchSize   = 50              // Shopee API limit per GetOrderDetail call
 	coalesceWindow = 2 * time.Second // buffer window: merge duplicate order_sn pushes
