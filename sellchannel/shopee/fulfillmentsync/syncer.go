@@ -10,12 +10,23 @@ package fulfillmentsync
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	pgAdapter "github.com/okdev/marketplace-sync/internal/infrastructure/postgres"
 	"github.com/okdev/marketplace-sync/pkg/logger"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/client"
 	"github.com/okdev/marketplace-sync/sellchannel/shopee/tokenstore"
 )
+
+// permanentFulfillmentErrors are Shopee error codes that indicate a configuration
+// or business problem that will not resolve itself — retrying wastes quota and floods logs.
+// Orders with these errors are marked 'failed' and require ops intervention.
+var permanentFulfillmentErrors = []string{
+	"logistics.no_supported_pickup_address", // seller has no pickup address configured
+	"logistics.pickup_address_not_found",    // address was deleted
+	"error_param",                           // bad request — code bug, not transient
+	"logistics.order_cannot_ship",           // order not in shippable state
+}
 
 // Syncer processes pending Shopee fulfillments from the DB.
 type Syncer struct {
@@ -42,18 +53,30 @@ func (s *Syncer) SyncPending(ctx context.Context, limit int) error {
 	done := 0
 	for _, f := range rows {
 		if err := s.fulfill(ctx, f); err != nil {
+			permanent := isPermanentError(err)
 			logger.ErrorContext(ctx, "fulfill order failed",
 				"event", "fulfillment.ship.error",
 				"order_sn", f.OrderSN,
 				"shop_id", f.ShopID,
+				"permanent", permanent,
 				"error", err,
 			)
-			if merr := s.repo.MarkError(ctx, f.ID, err.Error()); merr != nil {
-				logger.ErrorContext(ctx, "mark error failed",
-					"event", "fulfillment.mark_error.error",
-					"id", f.ID,
-					"error", merr,
-				)
+			if permanent {
+				if merr := s.repo.MarkFailed(ctx, f.ID, err.Error()); merr != nil {
+					logger.ErrorContext(ctx, "mark failed error",
+						"event", "fulfillment.mark_failed.error",
+						"id", f.ID,
+						"error", merr,
+					)
+				}
+			} else {
+				if merr := s.repo.MarkError(ctx, f.ID, err.Error()); merr != nil {
+					logger.ErrorContext(ctx, "mark error failed",
+						"event", "fulfillment.mark_error.error",
+						"id", f.ID,
+						"error", merr,
+					)
+				}
 			}
 			continue
 		}
@@ -100,6 +123,21 @@ func (s *Syncer) fulfillOwnFleet(ctx context.Context, f pgAdapter.ShopeeFulfillm
 		"tracking_number", f.TrackingNumber,
 	)
 	return nil
+}
+
+// isPermanentError returns true when the error is a known Shopee business/config error
+// that will not resolve itself on retry. These orders are marked 'failed' immediately.
+func isPermanentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, code := range permanentFulfillmentErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // fulfillShopeeLogistics ships via Shopee logistics using the first available pickup slot.

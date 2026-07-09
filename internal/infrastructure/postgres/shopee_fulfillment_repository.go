@@ -11,8 +11,9 @@ const (
 	ShopeeDeliveryShopeeLogistics = "shopee_logistics" // Shopee arranges pickup/dropoff
 	ShopeeDeliveryOwnFleet        = "own_fleet"        // seller arranges own shipment
 
-	ShopeeFulfillmentPending = "pending" // not yet shipped
+	ShopeeFulfillmentPending = "pending" // not yet shipped — will retry on next tick
 	ShopeeFulfillmentShipped = "shipped" // terminal: ship_order called successfully
+	ShopeeFulfillmentFailed  = "failed"  // terminal: permanent error, ops intervention required
 )
 
 // ShopeeFulfillment represents one order pending fulfillment.
@@ -109,6 +110,19 @@ func (r *ShopeeFulfillmentRepository) MarkError(ctx context.Context, id int64, e
 	const q = `UPDATE shopee_fulfillment SET last_error = $1, updated_at = now() WHERE id = $2`
 	if _, err := r.db.ExecContext(ctx, q, errMsg, id); err != nil {
 		return fmt.Errorf("mark shopee fulfillment error: %w", err)
+	}
+	return nil
+}
+
+// MarkFailed marks a row as permanently failed (ops intervention required).
+// Unlike MarkError, this sets sync_status = 'failed' so the scheduler skips it.
+func (r *ShopeeFulfillmentRepository) MarkFailed(ctx context.Context, id int64, errMsg string) error {
+	const q = `
+	UPDATE shopee_fulfillment
+	SET sync_status = $1, last_error = $2, updated_at = now()
+	WHERE id = $3`
+	if _, err := r.db.ExecContext(ctx, q, ShopeeFulfillmentFailed, errMsg, id); err != nil {
+		return fmt.Errorf("mark shopee fulfillment failed: %w", err)
 	}
 	return nil
 }
